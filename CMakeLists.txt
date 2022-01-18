@@ -1,0 +1,54 @@
+cmake_minimum_required (VERSION 3.0)
+
+project (MagicWays)
+
+function (target_import_def tgt_name def_path)
+	get_filename_component (def_name "${def_path}" NAME_WE)
+	set (lib_path "${CMAKE_CURRENT_BINARY_DIR}/${tgt_name}_${def_name}_imp.lib")
+	add_custom_command (
+		TARGET ${tgt_name} PRE_BUILD
+		COMMAND lib "/def:${def_path}" "/out:${lib_path}" /machine:x86
+		DEPENDS "${def_path}"
+		VERBATIM
+		COMMENT "Generating ${lib_path} from DEF file ${def_path}"
+	)
+	target_link_libraries (${tgt_name} PRIVATE "${lib_path}")
+endfunction ()
+
+function (add_redir_dll dll_name orig_name)
+	file (GLOB dll_headers *.h)
+	file (GLOB dll_sources *.c)
+	
+	add_library (${dll_name} SHARED ${dll_name}.def ${dll_headers} ${dll_sources})
+	target_link_options (${dll_name} PRIVATE /nodefaultlib:${orig_name}.lib)
+	target_import_def (${dll_name} ${CMAKE_CURRENT_SOURCE_DIR}/${orig_name}.def)
+endfunction ()
+
+if (MSVC)
+	add_link_options (/nodefaultlib /entry:EntryMSVC)
+	add_compile_options (/wd28251 /MT /GS- /Oi-)
+	add_definitions (/D_NO_CRT_STDIO_INLINE /DENTRY_POINT=EntryMSVC)
+	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+else ()
+	message (ERROR "Unknown compiler ${CMAKE_C_COMPILER_ID}!")
+endif ()
+
+set (CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Output/Unspecified)
+set (CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Output/Unspecified)
+set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Output/Unspecified)
+set (CMAKE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Output/Unspecified)
+
+foreach (OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
+    string(TOUPPER ${OUTPUTCONFIG} OUTPUTCONFIG )
+    set (CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_BINARY_DIR}/Output/${OUTPUTCONFIG})
+    set (CMAKE_LIBRARY_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_BINARY_DIR}/Output/${OUTPUTCONFIG})
+    set (CMAKE_RUNTIME_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_BINARY_DIR}/Output/${OUTPUTCONFIG})
+    set (CMAKE_PDB_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_BINARY_DIR}/Output/${OUTPUTCONFIG})
+endforeach (OUTPUTCONFIG CMAKE_CONFIGURATION_TYPES)
+
+add_subdirectory (CBits)
+add_subdirectory (DumpDef)
+#add_subdirectory (Kernel32)
