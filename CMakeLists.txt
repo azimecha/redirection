@@ -27,7 +27,14 @@ endfunction ()
 if (MSVC)
 	add_link_options (/nodefaultlib /entry:EntryMSVC)
 	add_compile_options (/wd28251 /MT /GS- /Oi-)
-	add_definitions (/D_NO_CRT_STDIO_INLINE /DENTRY_POINT=EntryMSVC)
+	
+	add_definitions (
+		/D_NO_CRT_STDIO_INLINE
+		/DENTRY_POINT=EntryMSVC 
+		/D_CRT_SECURE_NO_WARNINGS
+		/D_CRT_SEUCRE_NO_DEPRECATE
+	)
+	
 	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 	string (REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")

@@ -6,6 +6,8 @@
 
 #include <string.h>
 
+#if 1
+
 #ifndef REGTEST
 
 char * strncpy( char *  s1, const char *  s2, size_t n )
@@ -55,5 +57,7 @@ int main( void )
     TESTCASE( s[3] == 'd' );
     return TEST_RESULTS;
 }
+
+#endif
 
 #endif
