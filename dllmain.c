@@ -2,7 +2,7 @@
 #include <Windows.h>
 
 // https://docs.microsoft.com/en-us/windows/win32/dlls/dllmain
-BOOL WINAPI _DllMainCRTStartup(
+BOOL WINAPI ENTRY_POINT(
     HINSTANCE hinstDLL,  // handle to DLL module
     DWORD fdwReason,     // reason for calling function
     LPVOID lpReserved )  // reserved

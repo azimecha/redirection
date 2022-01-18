@@ -1,5 +1,4 @@
 cmake_minimum_required (VERSION 3.0)
-
 project (MagicWays)
 
 function (target_import_def tgt_name def_path)
@@ -7,7 +6,7 @@ function (target_import_def tgt_name def_path)
 	set (lib_path "${CMAKE_CURRENT_BINARY_DIR}/${tgt_name}_${def_name}_imp.lib")
 	add_custom_command (
 		TARGET ${tgt_name} PRE_BUILD
-		COMMAND lib "/def:${def_path}" "/out:${lib_path}" /machine:x86
+		COMMAND lib "/def:${def_path}" "/out:${lib_path}" /machine:x86 /nodefaultlib
 		DEPENDS "${def_path}"
 		VERBATIM
 		COMMENT "Generating ${lib_path} from DEF file ${def_path}"
@@ -19,12 +18,15 @@ function (add_redir_dll dll_name orig_name)
 	file (GLOB dll_headers *.h)
 	file (GLOB dll_sources *.c)
 	
-	add_library (${dll_name} SHARED ${dll_name}.def ${dll_headers} ${dll_sources})
+	add_library (${dll_name} SHARED ${dll_name}.def ${dll_headers} ${dll_sources} ${ARGN})
 	target_link_options (${dll_name} PRIVATE /nodefaultlib:${orig_name}.lib)
 	target_import_def (${dll_name} ${CMAKE_CURRENT_SOURCE_DIR}/${orig_name}.def)
 endfunction ()
 
 if (MSVC)
+	set (CMAKE_CXX_STANDARD_LIBRARIES "")
+	set (CMAKE_C_STANDARD_LIBRARIES "")
+	
 	add_link_options (/nodefaultlib /entry:EntryMSVC)
 	add_compile_options (/wd28251 /MT /GS- /Oi-)
 	
@@ -58,4 +60,4 @@ endforeach (OUTPUTCONFIG CMAKE_CONFIGURATION_TYPES)
 
 add_subdirectory (CBits)
 add_subdirectory (DumpDef)
-#add_subdirectory (Kernel32)
+add_subdirectory (Kernel32)
