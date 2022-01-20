@@ -4,6 +4,7 @@ EXPORTS
 ; Shims
 InitializeCriticalSectionEx=Impl_InitializeCriticalSectionEx
 LCMapStringEx=Impl_LCMapStringEx
+ExitProcess=TestExitProcess
 
 ; Redirects
                           ActivateActCtx=KERNEL32.ActivateActCtx                           @1         
@@ -188,7 +189,7 @@ LCMapStringEx=Impl_LCMapStringEx
             EnumerateLocalComputerNamesW=KERNEL32.EnumerateLocalComputerNamesW             @180       
                                EraseTape=KERNEL32.EraseTape                                @181       
                       EscapeCommFunction=KERNEL32.EscapeCommFunction                       @182       
-                             ExitProcess=KERNEL32.ExitProcess                              @183       
+;                             ExitProcess=KERNEL32.ExitProcess                              @183       
                               ExitThread=KERNEL32.ExitThread                               @184       
                                  ExitVDM=KERNEL32.ExitVDM                                  @185       
                ExpandEnvironmentStringsA=KERNEL32.ExpandEnvironmentStringsA                @186       

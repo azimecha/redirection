@@ -1,4 +1,41 @@
 #include "CommandLineToArgv.h"
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+LPCSTR CbGetNextArgument(LPCSTR pcszCommandLine, char cEscape) {
+    BOOL bInQuotes = FALSE;
+
+    // skip any leading spaces
+    while (*pcszCommandLine == ' ')
+        pcszCommandLine++;
+
+    // go until we find an unquoted space
+    while (*pcszCommandLine) {
+        switch (*pcszCommandLine) {
+        case ' ':
+            if (!bInQuotes) {
+                // skip additional spaces
+                while (*pcszCommandLine == ' ')
+                    pcszCommandLine++;
+                return pcszCommandLine;
+            }
+            break;
+
+        case '"':
+            bInQuotes = !bInQuotes;
+
+        default:
+            if ((*pcszCommandLine == cEscape) && (pcszCommandLine[1] != 0))
+                pcszCommandLine++; // skip escaped char
+            break;
+        }
+
+        pcszCommandLine++;
+    }
+
+    // nothing. return empty string
+    return pcszCommandLine;
+}
 
 // http://alter.org.ua/en/docs/win/args/
 

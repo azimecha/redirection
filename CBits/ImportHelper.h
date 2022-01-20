@@ -13,4 +13,30 @@
 
 #define CB_UNDECORATED_CALL(f,...) CbImported ## f(__VA_ARGS__)
 
+// d = dll, r = return type, c = calling conv., f = func name
+#define CB_LOADONDEMAND_EXTERN(d,r,c,f,...)									\
+	typedef r (c* CbOnDemandType ## f)(__VA_ARGS__);						\
+																			\
+	static CbOnDemandType ## f CbOnDemandRetrieve ## f(void) {				\
+		static CbOnDemandType ## f proc;									\
+		HANDLE hDLL;														\
+																			\
+		if (proc == NULL) {													\
+			hDLL = LoadLibraryA(d);											\
+			if (hDLL == NULL)												\
+				return NULL;												\
+																			\
+			proc = (CbOnDemandType ## f)GetProcAddress(hDLL, #f);			\
+			if (proc == NULL)												\
+				FreeLibrary(hDLL);											\
+		}																	\
+																			\
+		return proc;														\
+	}
+
+#define CB_LOADONDEMAND_CALL(f, ...) (CbOnDemandRetrieve ## f () (__VA_ARGS__))
+
+// fb = fallback return value
+#define CB_LOADONDEMAND_TRYCALL(fb, f, ...) ((CbOnDemandRetrieve ## f ()) ? (CbOnDemandRetrieve ## f () (__VA_ARGS__)) : (fb))
+
 #endif

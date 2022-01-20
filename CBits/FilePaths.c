@@ -20,14 +20,22 @@ const char* CbPathGetFilenameA(const char* pcszPath) {
 		case ':':
 		case '\\':
 		case '/':
-			break;
+			return pcszCur + 1;
 		}
 	}
 
-	return pcszCur + 1;
+	return pcszPath;
 }
 
 const char* CbStringSeekEndA(const char* pcszString) {
 	while (*pcszString) pcszString++;
 	return pcszString;
+}
+
+void CbStringToLowerA(char* pcszString) {
+	while (*pcszString) {
+		if ((*pcszString >= 'A') && (*pcszString <= 'Z'))
+			*pcszString = 'a' + (*pcszString - 'A');
+		pcszString++;
+	}
 }
