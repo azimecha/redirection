@@ -53,233 +53,107 @@ BOOL PaGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBu
 	return TRUE;
 }
 
-#ifndef STATUS_ENTRYPOINT_NOT_FOUND
-#define STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139
-#endif
+static BOOL s_FMPTryAppDir(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
+static BOOL s_FMPTryCurDir(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
+static BOOL s_FMPTrySys32Dir(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
+static BOOL s_FMPTrySys16Dir(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
+static BOOL s_FMPTryWinDir(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
+static BOOL s_FMPTryPathDirs(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
 
-typedef DWORD NTSTATUS;
+static void s_RemoveFilename(char* pszBuffer);
+static BOOL s_FMPAddFilenameAndTry(const char* pcszName, char* pszPathBuffer);
 
-typedef struct _ANSI_STRING {
-	USHORT Length;
-	USHORT MaximumLength;
-	PCHAR  Buffer;
-} ANSI_STRING, * PANSI_STRING;
-
-typedef struct _UNICODE_STRING {
-	USHORT Length;
-	USHORT MaximumLength;
-	PWSTR  Buffer;
-} UNICODE_STRING, * PUNICODE_STRING;
-
-typedef const UNICODE_STRING* PCUNICODE_STRING;
-
-CB_LOADONDEMAND_EXTERN("ntdll.dll", NTSTATUS, __stdcall, RtlAnsiStringToUnicodeString, PUNICODE_STRING us, PANSI_STRING as, BOOL bAlloc);
-CB_LOADONDEMAND_EXTERN("ntdll.dll", NTSTATUS, __stdcall, RtlUnicodeStringToAnsiString, PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
-CB_LOADONDEMAND_EXTERN("ntdll.dll", ULONG, __stdcall, RtlNtStatusToDosError, NTSTATUS status);
-
-#if 0
-
-// https://stackoverflow.com/questions/4445108/how-can-i-convert-a-native-nt-pathname-into-a-win32-path-name
-
-
-
-//typedef NTSTATUS(WINAPI* RtlAnsiStringToUnicodeString_t)(PUNICODE_STRING, PANSI_STRING, BOOL);
-
-typedef struct _RTL_BUFFER {
-	PUCHAR    Buffer;
-	PUCHAR    StaticBuffer;
-	SIZE_T    Size;
-	SIZE_T    StaticSize;
-	SIZE_T    ReservedForAllocatedSize; // for future doubling
-	PVOID     ReservedForIMalloc; // for future pluggable growth
-} RTL_BUFFER, * PRTL_BUFFER;
-
-typedef struct _RTL_UNICODE_STRING_BUFFER {
-	UNICODE_STRING String;
-	RTL_BUFFER     ByteBuffer;
-	UCHAR          MinimumStaticBufferForTerminalNul[sizeof(WCHAR)];
-} RTL_UNICODE_STRING_BUFFER, * PRTL_UNICODE_STRING_BUFFER;
-
-#define RTL_NT_PATH_NAME_TO_DOS_PATH_NAME_AMBIGUOUS   (0x00000001)
-#define RTL_NT_PATH_NAME_TO_DOS_PATH_NAME_UNC         (0x00000002)
-#define RTL_NT_PATH_NAME_TO_DOS_PATH_NAME_DRIVE       (0x00000003)
-#define RTL_NT_PATH_NAME_TO_DOS_PATH_NAME_ALREADY_DOS (0x00000004)
-
-//typedef NTSTATUS(WINAPI* RtlNtPathNameToDosPathName_t)(__in ULONG Flags, __inout PRTL_UNICODE_STRING_BUFFER Path, __out_opt PULONG Disposition, __inout_opt PWSTR* FilePart);
-
-#define RTL_DUPLICATE_UNICODE_STRING_NULL_TERMINATE (0x00000001)
-#define RTL_DUPLICATE_UNICODE_STRING_ALLOCATE_NULL_STRING (0x00000002)
-#define RTL_DUPSTR_ADD_NULL                          RTL_DUPLICATE_UNICODE_STRING_NULL_TERMINATE
-#define RTL_DUPSTR_ALLOC_NULL                        RTL_DUPLICATE_UNICODE_STRING_ALLOCATE_NULL_STRING
-
-//typedef NTSTATUS(WINAPI* RtlDuplicateUnicodeString_t)(_In_ ULONG Flags, _In_ PUNICODE_STRING StringIn, _Out_ PUNICODE_STRING StringOut);
-
-/*typedef NTSTATUS(WINAPI* RtlUnicodeStringToAnsiString_t)(
-	PANSI_STRING     DestinationString,
-	PCUNICODE_STRING SourceString,
-	BOOLEAN          AllocateDestinationString
-);
-
-typedef ULONG(WINAPI* RtlNtStatusToDosError_t)(NTSTATUS status);*/
-
-CB_LOADONDEMAND_EXTERN("ntdll.dll", NTSTATUS, __stdcall, RtlNtPathNameToDosPathName, ULONG Flags, PRTL_UNICODE_STRING_BUFFER Path, PULONG Disposition, PWSTR* FilePart);
-CB_LOADONDEMAND_EXTERN("ntdll.dll", NTSTATUS, __stdcall, RtlDuplicateUnicodeString, ULONG Flags, PUNICODE_STRING StringIn, PUNICODE_STRING StringOut);
-
-BOOL CbNtPathToWinPath(const char* pcszNTPath, char* pszWinPath, size_t nBufSize) {
-	NTSTATUS status;
-	ANSI_STRING asNTPath, asWinPath;
-	WCHAR wzPath[MAX_PATH + 1];
-	RTL_UNICODE_STRING_BUFFER usbPath;
-
-	asNTPath.Buffer = (PCHAR)pcszNTPath;
-	asNTPath.Length = (USHORT)strlen(pcszNTPath);
-	asNTPath.MaximumLength = asNTPath.Length + 1;
-
-	RtlSecureZeroMemory(&usbPath, sizeof(usbPath));
-	usbPath.String.Buffer = wzPath;
-	usbPath.String.Length = 0;
-	usbPath.String.MaximumLength = ARRAYSIZE(wzPath);
-	usbPath.ByteBuffer.Buffer = (PUCHAR)wzPath;
-	usbPath.ByteBuffer.Size = sizeof(wzPath);
-
-	status = CB_LOADONDEMAND_TRYCALL(STATUS_ENTRYPOINT_NOT_FOUND, RtlAnsiStringToUnicodeString, &usbPath.String, &asNTPath, FALSE);
-	if (status != 0) {
-		SetLastError(CB_LOADONDEMAND_TRYCALL(ERROR_NOT_FOUND, RtlNtStatusToDosError, status));
+BOOL PaFindModulePath(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	// if it can't even fit we're not going to ever "find" it
+	if (strlen(pcszName) >= nBufSize)
 		return FALSE;
+
+	// exact path
+	if (PaDoesFileExist(pcszName)) {
+		strcpy(pszPathBuffer, pcszName);
+		return TRUE;
 	}
 
-	status = CB_LOADONDEMAND_TRYCALL(STATUS_ENTRYPOINT_NOT_FOUND, RtlNtPathNameToDosPathName, 0, &usbPath, NULL, NULL);
-	if (status != 0) {
-		SetLastError(CB_LOADONDEMAND_TRYCALL(ERROR_NOT_FOUND, RtlNtStatusToDosError, status));
-		return FALSE;
-	}
+	// The directory from which the application loaded.
+	if (s_FMPTryAppDir(pcszName, pszPathBuffer, nBufSize)) return TRUE;
 
-	asWinPath.Buffer = pszWinPath;
-	asWinPath.Length = 0;
-	asWinPath.MaximumLength = (USHORT)nBufSize;
+	// The current directory.
+	if (s_FMPTryCurDir(pcszName, pszPathBuffer, nBufSize)) return TRUE;
 
-	status = CB_LOADONDEMAND_TRYCALL(STATUS_ENTRYPOINT_NOT_FOUND, RtlUnicodeStringToAnsiString, &asWinPath, &usbPath.String, FALSE);
-	if (status != 0) {
-		SetLastError(CB_LOADONDEMAND_TRYCALL(ERROR_NOT_FOUND, RtlNtStatusToDosError, status));
-		return FALSE;
-	}
+	// The system directory.
+	if (s_FMPTrySys32Dir(pcszName, pszPathBuffer, nBufSize)) return TRUE;
 
-	return TRUE;
+	// The 16-bit system directory.
+	if (s_FMPTrySys16Dir(pcszName, pszPathBuffer, nBufSize)) return TRUE;
+
+	// The Windows directory.
+	if (s_FMPTryWinDir(pcszName, pszPathBuffer, nBufSize)) return TRUE;
+
+	// The directories that are listed in the PATH environment variable.
+	return s_FMPTryPathDirs(pcszName, pszPathBuffer, nBufSize);
 }
 
-#elif 0
+static BOOL s_FMPTryAppDir(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	if (!PaGetProcessExecutablePath(GetCurrentProcess(), pszPathBuffer, nBufSize - strlen(pcszName)))
+		return FALSE;
 
-typedef struct _IO_STATUS_BLOCK {
-	union {
-		NTSTATUS Status;
-		PVOID    Pointer;
-	};
-	ULONG_PTR Information;
-} IO_STATUS_BLOCK, * PIO_STATUS_BLOCK;
+	s_RemoveFilename(pszPathBuffer);
+	return s_FMPAddFilenameAndTry(pcszName, pszPathBuffer);
+}
 
-typedef struct _OBJECT_ATTRIBUTES {
-	ULONG           Length;
-	HANDLE          RootDirectory;
-	PUNICODE_STRING ObjectName;
-	ULONG           Attributes;
-	PVOID           SecurityDescriptor;
-	PVOID           SecurityQualityOfService;
-} OBJECT_ATTRIBUTES, * POBJECT_ATTRIBUTES;
+static BOOL s_FMPTryCurDir(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	if (!GetCurrentDirectoryA(nBufSize - (strlen(pcszName) + 1), pszPathBuffer))
+		return FALSE;
 
-CB_LOADONDEMAND_EXTERN("ntdll.dll", NTSTATUS, __stdcall, NtCreateFile, PHANDLE FileHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, PIO_STATUS_BLOCK IoStatusBlock, PLARGE_INTEGER AllocationSize, ULONG FileAttributes, ULONG ShareAccess, ULONG CreateDisposition, ULONG CreateOptions, PVOID EaBuffer, ULONG EaLength);
+	return s_FMPAddFilenameAndTry(pcszName, pszPathBuffer);
+}
 
-#define FILE_OPEN 1
+static BOOL s_FMPTrySys32Dir(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	if (!GetSystemDirectoryA(pszPathBuffer, nBufSize - (strlen(pcszName) + 1)))
+		return FALSE;
 
-BOOL CbNtPathToWinPath(const char* pcszNTPath, char* pszWinPath, size_t nBufSize) {
-	NTSTATUS status;
-	ANSI_STRING asNTPath, asWinPath;
-	WCHAR wzPath[MAX_PATH + 1];
-	UNICODE_STRING usNTPath;
+	return s_FMPAddFilenameAndTry(pcszName, pszPathBuffer);
+}
+
+static const char s_cszSysDirName[] = "\\SYSTEM";
+
+static BOOL s_FMPTrySys16Dir(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	if (!GetWindowsDirectoryA(pszPathBuffer, nBufSize - (strlen(pcszName) + sizeof(s_cszSysDirName))))
+		return FALSE;
+
+	strcat(pszPathBuffer, s_cszSysDirName);
+	return s_FMPAddFilenameAndTry(pcszName, pszPathBuffer);
+}
+
+static BOOL s_FMPTryWinDir(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	if (!GetWindowsDirectoryA(pszPathBuffer, nBufSize - (strlen(pcszName) + 1)))
+		return FALSE;
+
+	return s_FMPAddFilenameAndTry(pcszName, pszPathBuffer);
+}
+
+static BOOL s_FMPTryPathDirs(const char* pcszName, char* pszPathBuffer, size_t nBufSize) {
+	return FALSE; // TODO
+}
+
+static void s_RemoveFilename(char* pszBuffer) {
+	char* pszFilenamePart;
+	pszFilenamePart = (char*)CbPathGetFilenameA(pszBuffer);
+	if (!pszFilenamePart) return;
+	pszFilenamePart[-1] = 0;
+}
+
+static BOOL s_FMPAddFilenameAndTry(const char* pcszName, char* pszPathBuffer) {
+	strcat(pszPathBuffer, "\\");
+	strcat(pszPathBuffer, pcszName);
+	return PaDoesFileExist(pszPathBuffer);
+}
+
+BOOL PaDoesFileExist(const char* pcszFilePath) {
 	HANDLE hFile;
-	OBJECT_ATTRIBUTES attrib;
-	IO_STATUS_BLOCK iosb;
 
-	asNTPath.Buffer = (PCHAR)pcszNTPath;
-	asNTPath.Length = (USHORT)strlen(pcszNTPath);
-	asNTPath.MaximumLength = asNTPath.Length + 1;
+	hFile = CreateFileA(pcszFilePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+	CloseHandle(hFile);
 
-	usNTPath.Buffer = wzPath;
-	usNTPath.Length = 0;
-	usNTPath.MaximumLength = ARRAYSIZE(wzPath);
-
-	status = CB_LOADONDEMAND_TRYCALL(STATUS_ENTRYPOINT_NOT_FOUND, RtlAnsiStringToUnicodeString, &usNTPath, &asNTPath, FALSE);
-	if (status != 0) {
-		SetLastError(CB_LOADONDEMAND_TRYCALL(ERROR_NOT_FOUND, RtlNtStatusToDosError, status));
-		return FALSE;
-	}
-
-	RtlSecureZeroMemory(&attrib, sizeof(attrib));
-	attrib.ObjectName = &usNTPath;
-
-	status = CB_LOADONDEMAND_TRYCALL(STATUS_ENTRYPOINT_NOT_FOUND, NtCreateFile, &hFile, GENERIC_READ, &attrib, &iosb, 0, FILE_ATTRIBUTE_NORMAL,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0, NULL, 0);
-	if (status != 0) {
-		SetLastError(CB_LOADONDEMAND_TRYCALL(ERROR_NOT_FOUND, RtlNtStatusToDosError, status));
-		return FALSE;
-	}
-
-
+	return hFile != INVALID_HANDLE_VALUE;
 }
-
-#elif 0
-
-// https://docs.microsoft.com/en-us/windows/win32/memory/obtaining-a-file-name-from-a-file-handle
-
-BOOL CbNtPathToWinPath(const char* pcszNTPath, char* pszWinPath, size_t nBufSize) {
-	// Translate path with device name to drive letters.
-	char szTemp[MAX_PATH];
-	char szName[MAX_PATH];
-	char szTempFile[MAX_PATH];
-	char szDrive[3];
-	BOOL bFound = FALSE;
-	char* p;
-	size_t uNameLen;
-
-	szTemp[0] = '\0';
-
-	if (GetLogicalDriveStringsA(MAX_PATH - 1, szTemp)) {
-		p = szTemp;
-
-		do {
-			// Copy the drive letter to the template string
-			*szDrive = *p;
-
-			// Look up each device name
-			if (QueryDosDeviceA(szDrive, szName, MAX_PATH)) {
-				uNameLen = strlen(szName);
-
-				if (uNameLen < MAX_PATH) {
-					bFound = strcmp(pcszNTPath, szName, uNameLen) == 0 && *(pcszNTPath + uNameLen) == '\\';
-
-					if (bFound) {
-						// Reconstruct pszFilename using szTempFile
-						// Replace device path with DOS path
-						/*TCHAR szTempFile[MAX_PATH];
-						StringCchPrintf(szTempFile,
-							MAX_PATH,
-							TEXT("%s%s"),
-							szDrive,
-							pcszNTPath + uNameLen);
-						StringCchCopyN(pszFilename, MAX_PATH + 1, szTempFile, _tcslen(szTempFile));*/
-
-						snprintf(szTempFile, MAX_PATH, "%s%s", szDrive, pcszNTPath + uNameLen);
-						strncpy(pszWinPath, szTempFile, nBufSize);
-					}
-				}
-			}
-
-			// Go to the next NULL character.
-			while (*p++);
-		} while (!bFound && *p); // end of string
-	}
-
-	return bFound;
-}
-
-#endif
-

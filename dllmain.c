@@ -8,7 +8,7 @@ BOOL WINAPI ENTRY_POINT(
     LPVOID lpReserved )  // reserved
 {
     // Perform actions based on the reason for calling.
-    switch( fdwReason ) 
+    switch (fdwReason) 
     { 
         case DLL_PROCESS_ATTACH:
          // Initialize once for each new process.
@@ -30,4 +30,9 @@ BOOL WINAPI ENTRY_POINT(
     return TRUE;  // Successful DLL_PROCESS_ATTACH.
 }
 
-void Dummy(void) {}
+// forces ways.dll reference
+__declspec(dllimport) extern int WaysDummy;
+__declspec(dllexport) int __stdcall Dummy(void) { return WaysDummy; }
+
+// tells ways.dll not to mess with us
+__declspec(dllexport) int NoIntercept = 0xC001;

@@ -39,4 +39,17 @@
 // fb = fallback return value
 #define CB_LOADONDEMAND_TRYCALL(fb, f, ...) ((CbOnDemandRetrieve ## f ()) ? (CbOnDemandRetrieve ## f () (__VA_ARGS__)) : (fb))
 
+struct _TEB;
+struct _PEB;
+
+__declspec(naked) static inline struct _TEB* __stdcall CbGetTEB(void) {
+	__asm MOV EAX, DWORD PTR FS : [0x18] ;
+	__asm RET 0;
+}
+
+__declspec(naked) static inline struct _PEB* __stdcall CbGetPEB(void) {
+	__asm MOV EAX, DWORD PTR FS : [0x30] ;
+	__asm RET 0;
+}
+
 #endif

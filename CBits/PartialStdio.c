@@ -1,3 +1,5 @@
+#include "PartialStdio.h"
+
 #define STB_SPRINTF_DECORATE(name) name
 #define STB_SPRINTF_IMPLEMENTATION
 #define STB_SPRINTF_NOFLOAT
@@ -285,4 +287,28 @@ void rewind(FILE* pf) {
 
 int vprintf(const char* pcszFormat, va_list va) {
 	return vfprintf((FILE*)GetStdHandle(STD_OUTPUT_HANDLE), pcszFormat, va);
+}
+
+static char* s_CallbackDebugPrint(char const* pcsBuf, char* pBufferStart, int nBufFill) {
+	char szTempBuf[STB_SPRINTF_MIN + 1];
+
+	memcpy(szTempBuf, pcsBuf, nBufFill);
+	szTempBuf[nBufFill] = 0;
+
+	OutputDebugStringA(szTempBuf);
+
+	return pBufferStart;
+}
+
+void dprintf(const char* pcszFormat, ...) {
+	va_list va;
+
+	va_start(va, pcszFormat);
+	vdprintf(pcszFormat, va);
+	va_end(va);
+}
+
+void vdprintf(const char* pcszFormat, va_list va) {
+	char szBuffer[STB_SPRINTF_MIN];
+	vsprintfcb(s_CallbackDebugPrint, szBuffer, szBuffer, pcszFormat, va);
 }

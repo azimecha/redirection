@@ -3,6 +3,8 @@
 #include <ConfigReading.h>
 #include <RewriteImports.h>
 
+#define SHIMMER_WAIT_BEFORE_RESUME
+
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <stdio.h>
@@ -71,6 +73,11 @@ void ENTRY_POINT(void) {
 		puts("Import replacement failed");
 		goto L_errorexit;
 	}
+
+#ifdef SHIMMER_WAIT_BEFORE_RESUME
+	printf("Imports have been replaced. Press any key to allow process to run.\r\n");
+	(void)getchar();
+#endif
 
 	// let it run
 	if (ResumeThread(s_infProcess.hThread) == -1) {

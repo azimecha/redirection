@@ -14,9 +14,9 @@ BOOL PaFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, cha
 
 BOOL PaGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBufSize);
 
-#if 0
-// file must exist for this function to work
-BOOL CbNtPathToWinPath(const char* pcszNTPath, char* pszWinPath, size_t nBufSize);
-#endif
+// using DLL search order, finds a path that CreateFile works on
+BOOL PaFindModulePath(const char* pcszName, char* pszPathBuffer, size_t nBufSize);
+
+BOOL PaDoesFileExist(const char* pcszFilePath);
 
 #endif

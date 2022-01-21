@@ -1,10 +1,14 @@
-
 LIBRARY "kernel_r.dll"
 EXPORTS
+; Required
+NoIntercept
+Dummy
+
 ; Shims
 InitializeCriticalSectionEx=Impl_InitializeCriticalSectionEx
 LCMapStringEx=Impl_LCMapStringEx
 ExitProcess=TestExitProcess
+
 
 ; Redirects
                           ActivateActCtx=KERNEL32.ActivateActCtx                           @1         
