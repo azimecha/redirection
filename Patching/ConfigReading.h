@@ -7,12 +7,12 @@
 #include <minwindef.h>
 
 // check next to target (if not null) and next to self
-BOOL CbFindConfigFile(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize);
+BOOL PaFindConfigFile(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize);
 
 // check next to target only (target may be self)
-BOOL CbFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize);
+BOOL PaFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize);
 
-BOOL CbGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBufSize);
+BOOL PaGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBufSize);
 
 #if 0
 // file must exist for this function to work

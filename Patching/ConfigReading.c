@@ -7,16 +7,16 @@
 #include <Psapi.h>
 #include <stdio.h>
 
-BOOL CbFindConfigFile(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize) {
-	return CbFindConfigFileDirect(pcszFileName, hTargetProcess, pszPathBuffer, nBufSize)
-		|| CbFindConfigFileDirect(pcszFileName, GetCurrentProcess(), pszPathBuffer, nBufSize);
+BOOL PaFindConfigFile(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize) {
+	return PaFindConfigFileDirect(pcszFileName, hTargetProcess, pszPathBuffer, nBufSize)
+		|| PaFindConfigFileDirect(pcszFileName, GetCurrentProcess(), pszPathBuffer, nBufSize);
 }
 
-BOOL CbFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize) {
+BOOL PaFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize) {
 	HANDLE hINIFile;
 	LPSTR pszFilenameStart;
 
-	if (!CbGetProcessExecutablePath(hTargetProcess, pszPathBuffer, nBufSize - strlen(pcszFileName)))
+	if (!PaGetProcessExecutablePath(hTargetProcess, pszPathBuffer, nBufSize - strlen(pcszFileName)))
 		return FALSE;
 
 	pszFilenameStart = (LPSTR)CbPathGetFilenameA(pszPathBuffer);
@@ -35,9 +35,7 @@ BOOL CbFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, cha
 #define CB_CONFIGREADING_NTPREFIX "\\\\.\\"
 #define CB_CONFIGREADING_NTREMOVE "\\Device\\"
 
-BOOL CbGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBufSize) {
-	char szNTPath[MAX_PATH + 1];
-
+BOOL PaGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBufSize) {
 	if (nBufSize < sizeof(CB_CONFIGREADING_NTPREFIX))
 		return FALSE;
 

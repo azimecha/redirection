@@ -64,6 +64,7 @@ foreach (OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
 endforeach (OUTPUTCONFIG CMAKE_CONFIGURATION_TYPES)
 
 add_subdirectory (CBits)
+add_subdirectory (Patching)
 add_subdirectory (DumpDef)
 add_subdirectory (Shimmer)
 add_subdirectory (Kernel32)
