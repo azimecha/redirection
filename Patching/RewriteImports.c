@@ -5,21 +5,36 @@
 #include <Windows.h>
 #include <Vfw.h> // FOURCC
 
+typedef struct _struct_PaRewriteFuncs{
+	PaReadMemoryProc procReadMemory;
+	PaWriteMemoryProc procWriteMemory;
+	PaGetReplacementProc procGetDLLReplacement;
+	PaDisplayMessageProc procDisplayInfo;
+	PaDisplayMessageProc procDisplayError;
+	LPVOID pUserData;
+} PaRewriteFuncs_t, *PaRewriteFuncs_p;
+
+static BOOL s_RewriteTable(EXTERNAL_PTR xpTable, DWORD nTableSize, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs);
+static BOOL s_RewriteTableDirect(PIMAGE_IMPORT_DESCRIPTOR pdescImports, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs);
+
 BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory, PaWriteMemoryProc procWriteMemory,
 	PaGetReplacementProc procGetDLLReplacement, PaDisplayMessageProc procDisplayInfo, PaDisplayMessageProc procDisplayError,
 	LPVOID pUserData)
 {
-	LPVOID xpNTHeaders, xpImports, xpImportDLLName;
+	LPVOID xpNTHeaders, xpImports;
 	IMAGE_DOS_HEADER hdrDOS;
 	IMAGE_NT_HEADERS hdrNT;
-	PIMAGE_IMPORT_DESCRIPTOR pdescImports, pdescCurImport;
 	DWORD nSizeImports;
-	char szImportDLLName[MAX_PATH + 1];
-	char szNormalizedImportDLLName[MAX_PATH + 1];
 	BOOL bSucceeded;
-	LPCSTR pcszReplacementDLL;
+	PaRewriteFuncs_t funcs;
 
 	bSucceeded = FALSE;
+	funcs.procReadMemory = procReadMemory;
+	funcs.procWriteMemory = procWriteMemory;
+	funcs.procGetDLLReplacement = procGetDLLReplacement;
+	funcs.procDisplayInfo = procDisplayInfo;
+	funcs.procDisplayError = procDisplayError;
+	funcs.pUserData = pUserData;
 
 	// read the DOS header and find the NT header
 	if (!procReadMemory(xpImageBase, sizeof(hdrDOS), &hdrDOS, pUserData)) {
@@ -55,58 +70,75 @@ BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory,
 	nSizeImports = hdrNT.OptionalHeader.DataDirectory[1].Size;
 	procDisplayInfo(pUserData, "Import directory: location 0x%08X, size %u\r\n", (uintptr_t)xpImports, (uintptr_t)nSizeImports);
 
-	// read the import directory
-	pdescImports = HeapAlloc(GetProcessHeap(), 0, nSizeImports);
+	return s_RewriteTable(xpImports, nSizeImports, xpImageBase, &funcs);
+}
+
+static BOOL s_RewriteTable(EXTERNAL_PTR xpTable, DWORD nTableSize, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs) {
+	PIMAGE_IMPORT_DESCRIPTOR pdescImports;
+	BOOL bSucceeded;
+
+	bSucceeded = FALSE;
+
+	pdescImports = HeapAlloc(GetProcessHeap(), 0, nTableSize);
 	if (pdescImports == NULL) {
-		procDisplayError(pUserData, "Error 0x%08X allocating memory for import directory table\r\n", GetLastError());
+		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X allocating memory for import directory table\r\n", GetLastError());
+		return FALSE;
+	}
+
+	if (!pfuncs->procReadMemory(xpTable, nTableSize, pdescImports, pfuncs->pUserData)) {
+		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X reading import directory table\r\n", GetLastError());
 		goto L_exit;
 	}
 
-	if (!procReadMemory(xpImports, nSizeImports, pdescImports, pUserData)) {
-		procDisplayError(pUserData, "Error 0x%08X reading import directory table\r\n", GetLastError());
-		goto L_exit;
-	}
+	bSucceeded = s_RewriteTableDirect(pdescImports, xpImageBase, pfuncs);
+
+L_exit:
+	HeapFree(GetProcessHeap(), 0, pdescImports);
+	return bSucceeded;
+}
+
+static BOOL s_RewriteTableDirect(PIMAGE_IMPORT_DESCRIPTOR pdescImports, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs) {
+	char szImportDLLName[MAX_PATH + 1];
+	char szNormalizedImportDLLName[MAX_PATH + 1];
+	LPCSTR pcszReplacementDLL;
+	EXTERNAL_PTR xpImportDLLName;
 
 	// iterate through the imports
-	for (pdescCurImport = pdescImports; pdescCurImport->Name != 0; pdescCurImport++) {
-		xpImportDLLName = (BYTE*)xpImageBase + pdescCurImport->Name;
-		procDisplayInfo(pUserData, "Import: name at 0x%08X -> ", (uintptr_t)xpImportDLLName);
+	for (pdescImports; pdescImports->Name != 0; pdescImports++) {
+		xpImportDLLName = (BYTE*)xpImageBase + pdescImports->Name;
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "Import: name at 0x%08X -> ", (uintptr_t)xpImportDLLName);
 
 		// read and normalize the import dll name
-		if (!procReadMemory(xpImportDLLName, sizeof(szImportDLLName) - 1, szImportDLLName, pUserData)) {
-			procDisplayError(pUserData, "\tError 0x%08X reading imported DLL name\r\n", GetLastError());
-			goto L_exit;
+		if (!pfuncs->procReadMemory(xpImportDLLName, sizeof(szImportDLLName) - 1, szImportDLLName, pfuncs->pUserData)) {
+			pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X reading imported DLL name\r\n", GetLastError());
+			return FALSE;
 		}
 
 		strcpy(szNormalizedImportDLLName, szImportDLLName);
 		CbPathRemoveExtensionA(szNormalizedImportDLLName);
 		CbStringToLowerA(szNormalizedImportDLLName);
-		procDisplayInfo(pUserData, "%s (%s)\r\n", szImportDLLName, szNormalizedImportDLLName);
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "%s (%s)\r\n", szImportDLLName, szNormalizedImportDLLName);
 
 		// check if it's in the list
-		pcszReplacementDLL = procGetDLLReplacement(szNormalizedImportDLLName, pUserData);
+		pcszReplacementDLL = pfuncs->procGetDLLReplacement(szNormalizedImportDLLName, pfuncs->pUserData);
 		if (pcszReplacementDLL == NULL)
 			continue; // nope, let it be
 
 		// replace it
 		if (strlen(pcszReplacementDLL) > strlen(szImportDLLName)) {
-			procDisplayError(pUserData, "\tError: Cannot replace \"%s\" with \"%s\" because the replacement name is longer than the original name",
+			pfuncs->procDisplayError(pfuncs->pUserData,
+				"\tError: Cannot replace \"%s\" with \"%s\" because the replacement name is longer than the original name",
 				szImportDLLName, pcszReplacementDLL);
-			goto L_exit;
+			return FALSE;
 		}
 
-		//if (!WriteProcessMemory(infProcess.hProcess, xpImportDLLName, szRedirDLLName, strlen(szRedirDLLName) + 1, &nBytesRead)) {
-		if (!procWriteMemory(pcszReplacementDLL, xpImportDLLName, strlen(pcszReplacementDLL) + 1, pUserData)) {
-			procDisplayError(pUserData, "\tError 0x%08X writing new DLL name \"%s\"\r\n", GetLastError(), pcszReplacementDLL);
-			goto L_exit;
+		if (!pfuncs->procWriteMemory(pcszReplacementDLL, xpImportDLLName, strlen(pcszReplacementDLL) + 1, pfuncs->pUserData)) {
+			pfuncs->procDisplayError(pfuncs->pUserData, "\tError 0x%08X writing new DLL name \"%s\"\r\n", GetLastError(), pcszReplacementDLL);
+			return FALSE;
 		}
 
-		procDisplayInfo(pUserData, "\tReplaced with %s\r\n", pcszReplacementDLL);
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "\tReplaced with %s\r\n", pcszReplacementDLL);
 	}
 
-	bSucceeded = TRUE;
-
-L_exit:
-	HeapFree(GetProcessHeap(), 0, pdescImports);
-	return bSucceeded;
+	return TRUE;
 }
