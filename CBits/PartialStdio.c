@@ -312,3 +312,24 @@ void vdprintf(const char* pcszFormat, va_list va) {
 	char szBuffer[STB_SPRINTF_MIN];
 	vsprintfcb(s_CallbackDebugPrint, szBuffer, szBuffer, pcszFormat, va);
 }
+
+int stricmp(const char* a, const char* b) {
+	char ca, cb;
+
+	while (*a && *b) {
+		ca = tolower(*a);
+		cb = tolower(*b);
+		if (ca < cb) return -1;
+		if (ca > cb) return 1;
+
+		a++; b++;
+	}
+
+	// at this point one (or both) is a null so we don't need to convert
+	if (*a < *b)
+		return -1;
+	else if (*a > *b)
+		return 1;
+	else
+		return 0;
+}

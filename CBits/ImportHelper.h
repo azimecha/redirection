@@ -3,6 +3,9 @@
 #ifndef HEADER_IMPORTHELPER
 #define HEADER_IMPORTHELPER
 
+#define _X86_
+#include <minwindef.h>
+
 // Allows undecorated functions to be called
 
 #define CB_UNDECORATED_EXTERN(r,f,...)										\
@@ -41,6 +44,7 @@
 
 struct _TEB;
 struct _PEB;
+struct _LDR_DATA_TABLE_ENTRY_FULL;
 
 __declspec(naked) static inline struct _TEB* __stdcall CbGetTEB(void) {
 	__asm MOV EAX, DWORD PTR FS : [0x18] ;
@@ -51,5 +55,11 @@ __declspec(naked) static inline struct _PEB* __stdcall CbGetPEB(void) {
 	__asm MOV EAX, DWORD PTR FS : [0x30] ;
 	__asm RET 0;
 }
+
+struct _LDR_DATA_TABLE_ENTRY_FULL* CbGetLoadedImageByIndex(unsigned nIndex);
+struct _LDR_DATA_TABLE_ENTRY_FULL* CbGetLoadedImageByName(LPCSTR pcszModuleName);
+
+LPVOID CbGetSymbolAddress(LPVOID pImageBase, LPCSTR pcszSymbolName);
+LPSTR CbNormalizeModuleName(LPSTR pszName);
 
 #endif

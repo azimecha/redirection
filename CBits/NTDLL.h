@@ -67,6 +67,10 @@ typedef struct _IO_STATUS_BLOCK {
 typedef NTSTATUS(__stdcall* NtCreateSection_t)(PHANDLE phSection, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib,
 	PLARGE_INTEGER pnMaxSize, ULONG nProtection, ULONG nAllocAttribs, HANDLE hFile);
 
+typedef NTSTATUS(__stdcall* NtMapViewOfSection_t)(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
+	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
+	ULONG nAllocationType, ULONG nWin32Protection);
+
 typedef enum _FILE_INFORMATION_CLASS {
     FileDirectoryInformation = 1,
     FileFullDirectoryInformation,                   // 2
@@ -167,9 +171,141 @@ typedef struct _FILE_NAME_INFORMATION {
     WCHAR FileName[1];
 } FILE_NAME_INFORMATION, * PFILE_NAME_INFORMATION;
 
+typedef struct _PEB_LDR_DATA {
+	BYTE       Reserved1[8];
+	PVOID      Reserved2[3];
+	LIST_ENTRY InMemoryOrderModuleList;
+} PEB_LDR_DATA, * PPEB_LDR_DATA;
+
+// Process Environment Block
+typedef struct _PEB {
+	BYTE                          Reserved1[2];
+	BYTE                          BeingDebugged;
+	BYTE                          Reserved2[1];
+	PVOID                         Reserved3[2];
+	PPEB_LDR_DATA                 Ldr;
+	void* ProcessParameters;
+	PVOID                         Reserved4[3];
+	PVOID                         AtlThunkSListPtr;
+	PVOID                         Reserved5;
+	ULONG                         Reserved6;
+	PVOID                         Reserved7;
+	ULONG                         Reserved8;
+	ULONG                         AtlThunkSListPtr32;
+	PVOID                         Reserved9[45];
+	BYTE                          Reserved10[96];
+	void* PostProcessInitRoutine;
+	BYTE                          Reserved11[128];
+	PVOID                         Reserved12[1];
+	ULONG                         SessionId;
+} PEB, * PPEB;
+
+typedef struct _CLIENT_ID {
+	HANDLE UniqueProcess;
+	HANDLE UniqueThread;
+} CLIENT_ID;
+
+// Thread Environment Block
+// https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/pebteb/teb/index.htm
+typedef struct _TEB {
+	NT_TIB NtTib;
+	PVOID EnvironmentPointer;
+	CLIENT_ID ClientId;
+	PVOID ActiveRpcHandle;
+	PVOID ThreadLocalStoragePointer;
+	PPEB  ProcessEnvironmentBlock;
+	ULONG LastErrorValue;
+	ULONG CountOfOwnedCriticalSections;
+	PVOID Reserved2[397];
+	BYTE  Reserved3[1952];
+	PVOID TlsSlots[64];
+	BYTE  Reserved4[8];
+	PVOID Reserved5[26];
+	PVOID ReservedForOle;
+	PVOID Reserved6[4];
+	PVOID TlsExpansionSlots;
+} TEB, * PTEB;
+
+C_ASSERT(FIELD_OFFSET(TEB, ProcessEnvironmentBlock) == 0x30);
+C_ASSERT(FIELD_OFFSET(TEB, TlsSlots) == 0x0E10);
+
+typedef struct _LDR_DATA_TABLE_ENTRY {
+	PVOID Reserved1[2];
+	LIST_ENTRY InMemoryOrderLinks;
+	PVOID Reserved2[2];
+	PVOID DllBase;
+	PVOID EntryPoint;
+	PVOID Reserved3;
+	UNICODE_STRING FullDllName;
+	BYTE Reserved4[8];
+	PVOID Reserved5[3];
+	union {
+		ULONG CheckSum;
+		PVOID Reserved6;
+	};
+	ULONG TimeDateStamp;
+} LDR_DATA_TABLE_ENTRY, * PLDR_DATA_TABLE_ENTRY;
+
+typedef struct _PEB_LDR_DATA_FULL {
+	ULONG Length;
+	BOOLEAN Initialized;
+	PVOID SsHandle;
+	LIST_ENTRY InLoadOrderModuleList;
+	LIST_ENTRY InMemoryOrderModuleList;
+	LIST_ENTRY InInitializationOrderModuleList;
+	PVOID EntryInProgress;
+} PEB_LDR_DATA_FULL, * PPEB_LDR_DATA_FULL;
+
+C_ASSERT(FIELD_OFFSET(PEB_LDR_DATA_FULL, InLoadOrderModuleList) == 0x0C);
+
+typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
+	LIST_ENTRY InLoadOrderLinks;
+	LIST_ENTRY InMemoryOrderLinks;
+	union {
+		LIST_ENTRY InInitializationOrderLinks;
+		LIST_ENTRY InProgressLinks;
+	};
+	PVOID DllBase;
+	PVOID EntryPoint;
+	ULONG SizeOfImage;
+	UNICODE_STRING FullDllName;
+	UNICODE_STRING BaseDllName;
+	ULONG Flags;
+	USHORT LoadCount;
+	USHORT TlsIndex;
+	union {
+		LIST_ENTRY HashLinks;
+		struct {
+			PVOID SectionPointer;
+			ULONG CheckSum;
+		};
+	};
+} LDR_DATA_TABLE_ENTRY_FULL, * PLDR_DATA_TABLE_ENTRY_FULL;
+
+typedef struct _SECTION_IMAGE_INFORMATION {
+	PVOID                   EntryPoint;
+	ULONG                   StackZeroBits;
+	ULONG                   StackReserved;
+	ULONG                   StackCommit;
+	ULONG                   ImageSubsystem;
+	WORD                    SubSystemVersionLow;
+	WORD                    SubSystemVersionHigh;
+	ULONG                   Unknown1;
+	ULONG                   ImageCharacteristics;
+	ULONG                   ImageMachineType;
+	ULONG                   Unknown2[3];
+} SECTION_IMAGE_INFORMATION, * PSECTION_IMAGE_INFORMATION;
+
+typedef enum _SECTION_INFORMATION_CLASS {
+	SectionBasicInformation,
+	SectionImageInformation
+} SECTION_INFORMATION_CLASS, * PSECTION_INFORMATION_CLASS;
+
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
-NTSTATUS __stdcall NtQueryInformationFile(HANDLE hFile, PIO_STATUS_BLOCK piosb, PVOID pInfoBuffer, ULONG nBufSiaze, FILE_INFORMATION_CLASS iclass);
+NTSTATUS __stdcall NtQueryInformationFile(HANDLE hFile, PIO_STATUS_BLOCK piosb, PVOID pInfoBuffer, ULONG nBufSize, FILE_INFORMATION_CLASS iclass);
+NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, PULONG pResultSize);
+NTSTATUS __stdcall NtUnmapViewOfSection(HANDLE hProcess, PVOID pBaseAddress);
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
 

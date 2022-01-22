@@ -4,20 +4,39 @@
 #include <PartialStdio.h>
 #include <FilePaths.h>
 #include <ConfigReading.h>
+#include <RewriteImports.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
+typedef struct _struct_RewriteDataBag {
+	char szRedirDLLName[MAX_PATH + 1];
+} RewriteDataBag_t, *RewriteDataBag_p;
 
 static NTSTATUS __stdcall s_InterceptedCreateSection(PHANDLE phSection, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib,
 	PLARGE_INTEGER pnMaxSize, ULONG nProtection, ULONG nAllocAttribs, HANDLE hFile);
 static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib,
 	PLARGE_INTEGER pnMaxSize, ULONG nProtection, ULONG nAllocAttribs, HANDLE hFile);
 
+static NTSTATUS __stdcall s_InterceptedMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
+	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
+	ULONG nAllocationType, ULONG nWin32Protection);
+static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
+	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
+	ULONG nAllocationType, ULONG nWin32Protection, PSECTION_IMAGE_INFORMATION pinfImageSection);
+
+static BOOL s_RewriteReadMemory(EXTERNAL_PTR pSrcBase, SIZE_T nSize, LPVOID pDestBuffer, LPVOID pUserData);
+static BOOL s_RewriteWriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZE_T nSize, LPVOID pUserData);
+static LPCSTR s_RewriteGetDLLReplacement(LPCSTR pcszName, RewriteDataBag_p pUserData);
+static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...);
+
 static NtCreateSection_t s_procRealCreateSection;
+static NtMapViewOfSection_t s_procRealMapViewOfSection;
 static char s_szConfigPath[MAX_PATH];
 
 BOOL ApplyLoadingHooks(void) {
 	NtCreateSection_t procCreateSection;
+	NtMapViewOfSection_t procMapViewOfSection;
 
 	// would prefer not to do this while holding the loader lock...
 	if (!PaFindConfigFileDirect("shims.ini", GetCurrentProcess(), s_szConfigPath, sizeof(s_szConfigPath))) {
@@ -34,7 +53,19 @@ BOOL ApplyLoadingHooks(void) {
 
 	s_procRealCreateSection = PaHookSimpleFunction(procCreateSection, 16, s_InterceptedCreateSection);
 	if (s_procRealCreateSection == NULL) {
-		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction failed with error 0x%08X\r\n", GetLastError());
+		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction for NtCreateSection failed with error 0x%08X\r\n", GetLastError());
+		return FALSE;
+	}
+
+	procMapViewOfSection = CbGetNTDLLFunction("NtMapViewOfSection");
+	if (procMapViewOfSection == NULL) {
+		dprintf("[ApplyLoadingHooks] NtMapViewOfSection not found!\r\n");
+		return FALSE;
+	}
+
+	s_procRealMapViewOfSection = PaHookSimpleFunction(procMapViewOfSection, 16, s_InterceptedMapViewOfSection);
+	if (s_procRealMapViewOfSection == NULL) {
+		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
 
@@ -91,10 +122,7 @@ static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACC
 
 	szFilePath[asFilePath.Length] = 0;
 	dprintf("[InterceptedCreateSection] Requested to map image %s\r\n", szFilePath);
-
-	pszFileName = (char*)CbPathGetFilenameA(szFilePath);
-	CbPathRemoveExtensionA(pszFileName);
-	CbStringToLowerA(pszFileName);
+	pszFileName = CbNormalizeModuleName(szFilePath);
 	dprintf("[InterceptedCreateSection] Normalized module name is %s\r\n", pszFileName);
 
 	if (GetPrivateProfileStringA("RedirectDLLs", pszFileName, "", szReplacementName, sizeof(szReplacementName), s_szConfigPath) != 0) {
@@ -112,6 +140,8 @@ static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACC
 			dprintf("[InterceptedCreateSection] Error 0x%08X opening module file\r\n", GetLastError());
 			return 0xC0000136; // STATUS_OPEN_FAILED, yeah i know, we just need *something* that's an error code
 		}
+
+		bDidOpenFile = TRUE;
 	}
 
 	dprintf("[InterceptedCreateSection] Calling NtCreateSection\r\n");
@@ -120,5 +150,83 @@ static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACC
 
 	// don't worry, creating a section keeps it open as long as the section exists
 	if (bDidOpenFile) CloseHandle(hFile);
+
 	return status;
+}
+
+static NTSTATUS __stdcall s_InterceptedMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
+	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
+	ULONG nAllocationType, ULONG nWin32Protection)
+{
+	NTSTATUS status;
+	SECTION_IMAGE_INFORMATION infImageSection;
+
+	if (GetProcessId(hProcess) == GetCurrentProcessId()) {
+		status = NtQuerySection(hSection, SectionImageInformation, &infImageSection, sizeof(infImageSection), NULL);
+		if (status == 0)
+			return s_InterceptedImageMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset,
+				pnViewSize, nInheritDisposition, nAllocationType, nWin32Protection, &infImageSection);
+		else
+			dprintf("[InterceptedMapViewOfSection] NtQuerySection returned 0x%08X, assuming non-image section\r\n", status);
+	}
+
+	return s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
+		nInheritDisposition, nAllocationType, nWin32Protection);
+}
+
+static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
+	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
+	ULONG nAllocationType, ULONG nWin32Protection, PSECTION_IMAGE_INFORMATION pinfImageSection)
+{
+	NTSTATUS status;
+	RewriteDataBag_t data;
+
+	RtlSecureZeroMemory(&data, sizeof(data));
+
+	status = s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
+		nInheritDisposition, nAllocationType, nWin32Protection);
+	if (status != 0) {
+		dprintf("[InterceptedMapViewOfSection] RealMapViewOfSection returned 0x%08X\r\n", status);
+		return status;
+	}
+	
+	if (!PaRewriteImports(*ppBaseAddress, s_RewriteReadMemory, s_RewriteWriteMemory, s_RewriteGetDLLReplacement, s_RewriteDisplayMessage,
+		s_RewriteDisplayMessage, &data))
+	{
+		dprintf("[InterceptedMapViewOfSection] PaRewriteImports failed with error 0x%08X\r\n", CbGetTEB()->LastErrorValue);
+		status = NtUnmapViewOfSection(hProcess, *ppBaseAddress);
+		if (status != 0)
+			dprintf("[InterceptedMapViewOfSection] NtUnmapViewOfSection returned 0x%08X\r\n", status);
+		return STATUS_DLL_INIT_FAILED; // again, we just need some kind of error code
+	}
+
+	return 0;
+}
+
+static BOOL s_RewriteReadMemory(EXTERNAL_PTR pSrcBase, SIZE_T nSize, LPVOID pDestBuffer, LPVOID pUserData) {
+	memcpy(pDestBuffer, pSrcBase, nSize);
+	return TRUE;
+}
+
+static BOOL s_RewriteWriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZE_T nSize, LPVOID pUserData) {
+	DWORD nOldProt;
+
+	if (!VirtualProtect(pDestBase, nSize, PAGE_EXECUTE_READWRITE, &nOldProt))
+		return FALSE;
+
+	memcpy(pDestBase, pSrcBuffer, nSize);
+	return TRUE;
+}
+
+static LPCSTR s_RewriteGetDLLReplacement(LPCSTR pcszName, RewriteDataBag_p pUserData) {
+	return GetPrivateProfileStringA("RedirectDLLs", pcszName, "", pUserData->szRedirDLLName, sizeof(pUserData->szRedirDLLName) - 1,
+		s_szConfigPath) ? pUserData->szRedirDLLName : NULL;
+}
+
+static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...) {
+	va_list va;
+	va_start(va, pcszFormat);
+	dprintf("[InterceptedMapViewOfSection] [PaRewriteImports] ");
+	vdprintf(pcszFormat, va);
+	va_end(va);
 }
