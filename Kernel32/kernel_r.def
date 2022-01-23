@@ -1,7 +1,7 @@
 LIBRARY "kernel_r.dll"
 EXPORTS
 ; Required
-NoIntercept
+NoRedirectImports
 Dummy
 
 ; Shims

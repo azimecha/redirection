@@ -5,9 +5,13 @@
 #include <FilePaths.h>
 #include <ConfigReading.h>
 #include <RewriteImports.h>
+#include <CommandLineToArgv.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
+//#define WAYS_INTERCEPT_SECTION
+#define WAYS_INTERCEPT_MAPPING
 
 typedef struct _struct_RewriteDataBag {
 	char szRedirDLLName[MAX_PATH + 1];
@@ -33,18 +37,30 @@ static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...);
 static NtCreateSection_t s_procRealCreateSection;
 static NtMapViewOfSection_t s_procRealMapViewOfSection;
 static char s_szConfigPath[MAX_PATH];
+static char s_mszExcludePaths[4096];
 
 BOOL ApplyLoadingHooks(void) {
 	NtCreateSection_t procCreateSection;
 	NtMapViewOfSection_t procMapViewOfSection;
-
+	LPSTR pszExcludePath;
+	
 	// would prefer not to do this while holding the loader lock...
 	if (!PaFindConfigFileDirect("shims.ini", GetCurrentProcess(), s_szConfigPath, sizeof(s_szConfigPath))) {
 		dprintf("[ApplyLoadingHooks] PaFindConfigFileDirect failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
 
+	if (GetPrivateProfileSectionA("Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths), s_szConfigPath) >= (sizeof(s_mszExcludePaths) - 2)) {
+		dprintf("[ApplyLoadingHooks] Too many exclude paths!\r\n");
+		return FALSE;
+	}
+
+	CB_FOREACH_MULTISZ(pszExcludePath, s_mszExcludePaths)
+		CbStringToLowerA(pszExcludePath);
+
 	// ... but it's important for this part
+
+#ifdef WAYS_INTERCEPT_SECTION
 	procCreateSection = CbGetNTDLLFunction("NtCreateSection");
 	if (procCreateSection == NULL) {
 		dprintf("[ApplyLoadingHooks] NtCreateSection not found!\r\n");
@@ -56,7 +72,9 @@ BOOL ApplyLoadingHooks(void) {
 		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction for NtCreateSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
+#endif
 
+#ifdef WAYS_INTERCEPT_MAPPING
 	procMapViewOfSection = CbGetNTDLLFunction("NtMapViewOfSection");
 	if (procMapViewOfSection == NULL) {
 		dprintf("[ApplyLoadingHooks] NtMapViewOfSection not found!\r\n");
@@ -68,6 +86,10 @@ BOOL ApplyLoadingHooks(void) {
 		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
+#endif
+
+	(void)procCreateSection;
+	(void)procMapViewOfSection;
 
 	return TRUE;
 }
@@ -178,8 +200,15 @@ static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HA
 	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
 	ULONG nAllocationType, ULONG nWin32Protection, PSECTION_IMAGE_INFORMATION pinfImageSection)
 {
-	NTSTATUS status;
+	NTSTATUS status, statusAbort;
 	RewriteDataBag_t data;
+	BYTE arrNameUniBuffer[MAX_PATH * 3];
+	PUNICODE_STRING pusModuleName;
+	CHAR szNameAscBuffer[MAX_PATH + 1];
+	ANSI_STRING asModuleName;
+	ULONG nResultSize;
+	LPSTR pszExcludePath;
+	int* pnNoRedirectMarker;
 
 	RtlSecureZeroMemory(&data, sizeof(data));
 
@@ -189,18 +218,56 @@ static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HA
 		dprintf("[InterceptedMapViewOfSection] RealMapViewOfSection returned 0x%08X\r\n", status);
 		return status;
 	}
+
+	pnNoRedirectMarker = CbGetSymbolAddress(*ppBaseAddress, "NoRedirectImports");
+	if ((pnNoRedirectMarker != NULL) && (*pnNoRedirectMarker == 1)) {
+		dprintf("[InterceptedMapViewOfSection] Module excluded from import table rewrite (NoRedirectImports=1)\r\n");
+		return 0;
+	}
+
+	status = NtQueryVirtualMemory(hProcess, *ppBaseAddress, MemorySectionName, arrNameUniBuffer, sizeof(arrNameUniBuffer), &nResultSize);
+	if (status != 0) {
+		dprintf("[InterceptedMapViewOfSection] NtQueryVirtualMemory returned 0x%08X\r\n", status);
+		goto L_abort;
+	}
+
+	pusModuleName = (PUNICODE_STRING)&arrNameUniBuffer[0];
+	asModuleName.Buffer = szNameAscBuffer;
+	asModuleName.Length = 0;
+	asModuleName.MaximumLength = sizeof(szNameAscBuffer) - 1;
+
+	status = RtlUnicodeStringToAnsiString(&asModuleName, pusModuleName, FALSE);
+	if (status != 0) {
+		dprintf("[InterceptedMapViewOfSection] RtlUnicodeStringToAnsiString returned 0x%08X\r\n", status);
+		goto L_abort;
+	}
+
+	szNameAscBuffer[asModuleName.Length] = 0;
+	CbStringToLowerA(szNameAscBuffer);
+	dprintf("[InterceptedMapViewOfSection] Module path: %s\r\m", szNameAscBuffer);
+
+	CB_FOREACH_MULTISZ(pszExcludePath, s_mszExcludePaths) {
+		if (strstr(szNameAscBuffer, pszExcludePath) != NULL) {
+			dprintf("[InterceptedMapViewOfSection] Module excluded from import table rewrite by rule: %s\r\n", pszExcludePath);
+			return 0;
+		}
+	}
 	
 	if (!PaRewriteImports(*ppBaseAddress, s_RewriteReadMemory, s_RewriteWriteMemory, s_RewriteGetDLLReplacement, s_RewriteDisplayMessage,
 		s_RewriteDisplayMessage, &data))
 	{
 		dprintf("[InterceptedMapViewOfSection] PaRewriteImports failed with error 0x%08X\r\n", CbGetTEB()->LastErrorValue);
-		status = NtUnmapViewOfSection(hProcess, *ppBaseAddress);
-		if (status != 0)
-			dprintf("[InterceptedMapViewOfSection] NtUnmapViewOfSection returned 0x%08X\r\n", status);
-		return STATUS_DLL_INIT_FAILED; // again, we just need some kind of error code
+		status = STATUS_DLL_INIT_FAILED; // again, we just need some kind of error code
+		goto L_abort;
 	}
 
 	return 0;
+
+L_abort:
+	statusAbort = NtUnmapViewOfSection(hProcess, *ppBaseAddress);
+	if (statusAbort != 0)
+		dprintf("[InterceptedMapViewOfSection] NtUnmapViewOfSection returned 0x%08X\r\n", status);
+	return status;
 }
 
 static BOOL s_RewriteReadMemory(EXTERNAL_PTR pSrcBase, SIZE_T nSize, LPVOID pDestBuffer, LPVOID pUserData) {

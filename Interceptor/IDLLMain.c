@@ -19,4 +19,4 @@ BOOL WINAPI ENTRY_POINT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) 
 }
 
 int WaysDummy = 0xB0B;
-int NoIntercept = 0xC001;
+int NoRedirectImports = 1;

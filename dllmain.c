@@ -35,4 +35,4 @@ __declspec(dllimport) extern int WaysDummy;
 __declspec(dllexport) int __stdcall Dummy(void) { return WaysDummy; }
 
 // tells ways.dll not to mess with us
-__declspec(dllexport) int NoIntercept = 0xC001;
+__declspec(dllexport) int NoRedirectImports = 1;

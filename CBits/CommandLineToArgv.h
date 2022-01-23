@@ -24,4 +24,7 @@ CommandLineToArgvA(
     int* _argc
 );
 
+// foreach on a multi-string buffer terminated by a double null
+#define CB_FOREACH_MULTISZ(p,b) for ((p) = (b); *(p); (p) += strlen(p) + 1)
+
 #endif

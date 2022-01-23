@@ -1,4 +1,4 @@
 LIBRARY "ways.dll"
 EXPORTS
 WaysDummy
-NoIntercept
+NoRedirectImports

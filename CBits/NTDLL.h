@@ -301,11 +301,21 @@ typedef enum _SECTION_INFORMATION_CLASS {
 	SectionImageInformation
 } SECTION_INFORMATION_CLASS, * PSECTION_INFORMATION_CLASS;
 
+// TODO: Different on older versions of Windows? 
+// see http://www.rohitab.com/discuss/topic/41092-how-to-use-ntqueryvirtualmemory-to-get-loaded-dlls/
+typedef enum _MEMORY_INFORMATION_CLASS {
+	MemoryBasicInformation,
+	MemoryWorkingSetList,
+	MemorySectionName
+} MEMORY_INFORMATION_CLASS, * PMEMORY_INFORMATION_CLASS;
+
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall NtQueryInformationFile(HANDLE hFile, PIO_STATUS_BLOCK piosb, PVOID pInfoBuffer, ULONG nBufSize, FILE_INFORMATION_CLASS iclass);
 NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, PULONG pResultSize);
 NTSTATUS __stdcall NtUnmapViewOfSection(HANDLE hProcess, PVOID pBaseAddress);
+NTSTATUS __stdcall NtQueryVirtualMemory(HANDLE hProcess, PVOID pBaseAddress, MEMORY_INFORMATION_CLASS iclass, PVOID pBuffer, ULONG nBufSize,
+	PULONG pnResultSize);
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
 

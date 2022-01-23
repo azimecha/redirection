@@ -18,11 +18,13 @@
 	}
 */
 
-#define CB_NTDLL_DEFINE(r,n,a1,a2)											\
-	static r (__stdcall* s_func ## n)a1;									\
-	r __stdcall n a1 {														\
+#define CB_NTDLL_DEFINE(n,a1,a2)											\
+	static NTSTATUS (__stdcall* s_func ## n)a1;								\
+	NTSTATUS __stdcall n a1 {												\
 		if ((s_func ## n) == NULL)											\
 			s_func ## n = CbGetNTDLLFunction(#n);							\
+		if ((s_func ## n) == NULL)											\
+			return STATUS_ENTRYPOINT_NOT_FOUND;								\
 		return s_func ## n a2;												\
 	}
 
@@ -36,8 +38,9 @@ LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName) {
 	return CbGetSymbolAddress(pentNTDLL->DllBase, pcszFuncName);
 }
 
-CB_NTDLL_DEFINE(NTSTATUS, RtlAnsiStringToUnicodeString, (PUNICODE_STRING a, PCANSI_STRING b, BOOLEAN c), (a, b, c));
-CB_NTDLL_DEFINE(NTSTATUS, RtlUnicodeStringToAnsiString, (PANSI_STRING a, PCUNICODE_STRING b, BOOLEAN c), (a, b, c));
-CB_NTDLL_DEFINE(NTSTATUS, NtQueryInformationFile, (HANDLE a, PIO_STATUS_BLOCK b, PVOID c, ULONG d, FILE_INFORMATION_CLASS e), (a, b, c, d, e));
-CB_NTDLL_DEFINE(NTSTATUS, NtQuerySection, (HANDLE a, SECTION_INFORMATION_CLASS b, PVOID c, ULONG d, PULONG e), (a, b, c, d, e));
-CB_NTDLL_DEFINE(NTSTATUS, NtUnmapViewOfSection, (HANDLE a, PVOID b), (a, b));
+CB_NTDLL_DEFINE(RtlAnsiStringToUnicodeString, (PUNICODE_STRING a, PCANSI_STRING b, BOOLEAN c), (a, b, c));
+CB_NTDLL_DEFINE(RtlUnicodeStringToAnsiString, (PANSI_STRING a, PCUNICODE_STRING b, BOOLEAN c), (a, b, c));
+CB_NTDLL_DEFINE(NtQueryInformationFile, (HANDLE a, PIO_STATUS_BLOCK b, PVOID c, ULONG d, FILE_INFORMATION_CLASS e), (a, b, c, d, e));
+CB_NTDLL_DEFINE(NtQuerySection, (HANDLE a, SECTION_INFORMATION_CLASS b, PVOID c, ULONG d, PULONG e), (a, b, c, d, e));
+CB_NTDLL_DEFINE(NtUnmapViewOfSection, (HANDLE a, PVOID b), (a, b));
+CB_NTDLL_DEFINE(NtQueryVirtualMemory, (HANDLE a, PVOID b, MEMORY_INFORMATION_CLASS c, PVOID d, ULONG e, PULONG f), (a, b, c, d, e, f));
