@@ -44,3 +44,18 @@ CB_NTDLL_DEFINE(NtQueryInformationFile, (HANDLE a, PIO_STATUS_BLOCK b, PVOID c, 
 CB_NTDLL_DEFINE(NtQuerySection, (HANDLE a, SECTION_INFORMATION_CLASS b, PVOID c, ULONG d, PULONG e), (a, b, c, d, e));
 CB_NTDLL_DEFINE(NtUnmapViewOfSection, (HANDLE a, PVOID b), (a, b));
 CB_NTDLL_DEFINE(NtQueryVirtualMemory, (HANDLE a, PVOID b, MEMORY_INFORMATION_CLASS c, PVOID d, ULONG e, PULONG f), (a, b, c, d, e, f));
+
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status) {
+	static ULONG(__stdcall* procRtlNtStatusToDosError)(NTSTATUS status);
+
+	if (procRtlNtStatusToDosError == NULL)
+		procRtlNtStatusToDosError = CbGetNTDLLFunction("RtlNtStatusToDosError");
+
+	if (procRtlNtStatusToDosError == NULL)
+		return ~0L;
+
+	return procRtlNtStatusToDosError(status);
+}

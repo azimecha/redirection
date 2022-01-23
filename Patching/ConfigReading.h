@@ -19,4 +19,7 @@ BOOL PaFindModulePath(const char* pcszName, char* pszPathBuffer, size_t nBufSize
 
 BOOL PaDoesFileExist(const char* pcszFilePath);
 
+// gets the preferred Win32 path for a volume (usually a drive letter)
+BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize);
+
 #endif

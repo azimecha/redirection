@@ -244,7 +244,7 @@ static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HA
 
 	szNameAscBuffer[asModuleName.Length] = 0;
 	CbStringToLowerA(szNameAscBuffer);
-	dprintf("[InterceptedMapViewOfSection] Module path: %s\r\m", szNameAscBuffer);
+	dprintf("[InterceptedMapViewOfSection] Module path: %s\r\n", szNameAscBuffer);
 
 	CB_FOREACH_MULTISZ(pszExcludePath, s_mszExcludePaths) {
 		if (strstr(szNameAscBuffer, pszExcludePath) != NULL) {

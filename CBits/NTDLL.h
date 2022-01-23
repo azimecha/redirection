@@ -316,6 +316,7 @@ NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS icl
 NTSTATUS __stdcall NtUnmapViewOfSection(HANDLE hProcess, PVOID pBaseAddress);
 NTSTATUS __stdcall NtQueryVirtualMemory(HANDLE hProcess, PVOID pBaseAddress, MEMORY_INFORMATION_CLASS iclass, PVOID pBuffer, ULONG nBufSize,
 	PULONG pnResultSize);
+ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status);
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
 

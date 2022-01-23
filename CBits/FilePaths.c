@@ -1,4 +1,5 @@
 #include "FilePaths.h"
+#include "PartialStdio.h"
 #include <string.h>
 
 void CbPathRemoveExtensionA(char* pcszPath) {
@@ -34,8 +35,27 @@ const char* CbStringSeekEndA(const char* pcszString) {
 
 void CbStringToLowerA(char* pcszString) {
 	while (*pcszString) {
-		if ((*pcszString >= 'A') && (*pcszString <= 'Z'))
-			*pcszString = 'a' + (*pcszString - 'A');
+		*pcszString = (char)tolower(*pcszString);
 		pcszString++;
 	}
+}
+
+int CbStringStartsWithA(const char* pcszCheck, const char* pcszCheckFor) {
+	while (*pcszCheckFor) {
+		if (*pcszCheck != *pcszCheckFor)
+			return 0;
+		pcszCheck++; pcszCheckFor++;
+	}
+
+	return 1;
+}
+
+int CbStringStartsWithIA(const char* pcszCheck, const char* pcszCheckFor) {
+	while (*pcszCheckFor) {
+		if (tolower(*pcszCheck) != tolower(*pcszCheckFor))
+			return 0;
+		pcszCheck++; pcszCheckFor++;
+	}
+
+	return 1;
 }

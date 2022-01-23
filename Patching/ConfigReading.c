@@ -1,11 +1,15 @@
 #include "ConfigReading.h"
 #include "FilePaths.h"
 #include "ImportHelper.h"
+#include <NTDLL.h>
+#include <PartialStdio.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <Psapi.h>
 #include <stdio.h>
+#include <limits.h>
+#include <stdint.h>
 
 BOOL PaFindConfigFile(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize) {
 	return PaFindConfigFileDirect(pcszFileName, hTargetProcess, pszPathBuffer, nBufSize)
@@ -32,23 +36,43 @@ BOOL PaFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, cha
 	return hINIFile != INVALID_HANDLE_VALUE;
 }
 
-#define CB_CONFIGREADING_NTPREFIX "\\\\.\\"
-#define CB_CONFIGREADING_NTREMOVE "\\Device\\"
+#define CB_CONFIGREADING_NTDEVICE "\\Device\\"
 
 BOOL PaGetProcessExecutablePath(HANDLE hProcess, char* pszPathBuffer, size_t nBufSize) {
-	if (nBufSize < sizeof(CB_CONFIGREADING_NTPREFIX))
+	char szNTPath[MAX_PATH * 2];
+	LPSTR pszPathPart;
+
+	// get the raw NT path
+	if (!GetProcessImageFileNameA(hProcess, szNTPath, sizeof(szNTPath)))
 		return FALSE;
 
-	strcpy(pszPathBuffer, CB_CONFIGREADING_NTPREFIX);
+	// make sure it looks like it should (starts with \Device\)
+	if (!CbStringStartsWithIA(szNTPath, CB_CONFIGREADING_NTDEVICE)) {
+		SetLastError(ERROR_PATH_NOT_FOUND);
+		return FALSE;
+	}
 
-	if (!GetProcessImageFileNameA(hProcess, pszPathBuffer + sizeof(CB_CONFIGREADING_NTPREFIX) - 1, nBufSize - (sizeof(CB_CONFIGREADING_NTPREFIX) - 1)))
+	// find the start of the actual file path: the next slash after \Device\HarddiskPartitionX
+	// this will have issues if Windows gives us something like \Device\HarddiskY\PartitionZ but that hasn't been observed
+	pszPathPart = strchr(szNTPath + sizeof(CB_CONFIGREADING_NTDEVICE), '\\');
+	if (pszPathPart == NULL) {
+		SetLastError(ERROR_PATH_NOT_FOUND);
+		return FALSE;
+	}
+
+	// replace the \ after the \Device\HarddiskPartitionX part with a null
+	// before that is the volume NT path, after that is the file path sans slash
+	*pszPathPart = 0; pszPathPart++;
+
+	// get the Win32 ("DOS") path for \Device\HarddiskPartitionX
+	if (!PaGetVolumeWin32Path(szNTPath, pszPathBuffer, nBufSize))
 		return FALSE;
 
-	if (memcmp(pszPathBuffer + sizeof(CB_CONFIGREADING_NTPREFIX) - 1, CB_CONFIGREADING_NTREMOVE, sizeof(CB_CONFIGREADING_NTREMOVE) - 1) != 0)
+	// stick the file path back on
+	if (!strccat(pszPathBuffer, nBufSize, "\\") || !strccat(pszPathBuffer, nBufSize, pszPathPart)) {
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
 		return FALSE;
-
-	memmove(pszPathBuffer + sizeof(CB_CONFIGREADING_NTPREFIX) - 1, pszPathBuffer + sizeof(CB_CONFIGREADING_NTPREFIX) + sizeof(CB_CONFIGREADING_NTREMOVE) - 2,
-		strlen(pszPathBuffer + sizeof(CB_CONFIGREADING_NTPREFIX) + sizeof(CB_CONFIGREADING_NTREMOVE) - 2) + 1);
+	}
 
 	return TRUE;
 }
@@ -156,4 +180,78 @@ BOOL PaDoesFileExist(const char* pcszFilePath) {
 	CloseHandle(hFile);
 
 	return hFile != INVALID_HANDLE_VALUE;
+}
+
+#pragma warning(disable:28112)
+
+typedef HRESULT(__stdcall* FilterGetDosName_t)(LPCWSTR pcwzVolumeName, LPWSTR pwzDOSNameOUT, DWORD nBufSize);
+
+BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize) {
+	static volatile HMODULE hFilterLib;
+	static FilterGetDosName_t procFilterGetDosName;
+	HMODULE hNewFilterLib;
+	WCHAR wzNTName[MAX_PATH + 1];
+	WCHAR wzDOSName[MAX_PATH + 1];
+	UNICODE_STRING usNTName, usDOSName;
+	ANSI_STRING asNTName, asDOSName;
+	NTSTATUS status;
+	HRESULT hr;
+
+	if (nBufSize > UINT16_MAX)
+		nBufSize = UINT16_MAX;
+
+	// convert NT name to unicode
+
+	asNTName.Buffer = pcszNTName;
+	asNTName.Length = strlen(pcszNTName);
+	asNTName.MaximumLength = asNTName.Length;
+
+	usNTName.Buffer = wzNTName;
+	usNTName.Length = 0;
+	usNTName.MaximumLength = sizeof(wzNTName) - sizeof(WCHAR);
+
+	status = RtlAnsiStringToUnicodeString(&usNTName, &asNTName, FALSE);
+	if (status != 0) {
+		SetLastError(RtlNtStatusToDosError(status));
+		return FALSE;
+	}
+
+	// find and call function
+
+	if (hFilterLib == NULL) {
+		hNewFilterLib = LoadLibraryA("fltlib.dll");
+		if (hNewFilterLib == NULL) return FALSE;
+
+		if (InterlockedCompareExchangePointer(&hFilterLib, hNewFilterLib, NULL) != NULL)
+			FreeLibrary(hNewFilterLib);
+	}
+
+	if (procFilterGetDosName == NULL) {
+		procFilterGetDosName = (FilterGetDosName_t)GetProcAddress(hFilterLib, "FilterGetDosName");
+		if (procFilterGetDosName == NULL) return FALSE;
+	}
+
+	hr = procFilterGetDosName(wzNTName, wzDOSName, RTL_NUMBER_OF_V2(wzDOSName));
+	if (FAILED(hr)) {
+		SetLastError(ERROR_PATH_NOT_FOUND);
+		return FALSE;
+	}
+
+	// convert DOS name to ansi
+
+	usDOSName.Buffer = wzDOSName;
+	usDOSName.Length = lstrlenW(wzDOSName) * sizeof(WCHAR);
+	usDOSName.MaximumLength = sizeof(wzDOSName) - sizeof(WCHAR);
+
+	asDOSName.Buffer = pszPathBuffer;
+	asDOSName.Length = (USHORT)nBufSize;
+	asDOSName.MaximumLength = (USHORT)nBufSize;
+
+	status = RtlUnicodeStringToAnsiString(&asDOSName, &usDOSName, FALSE);
+	if (status != 0) {
+		SetLastError(RtlNtStatusToDosError(status));
+		return FALSE;
+	}
+
+	return TRUE;
 }

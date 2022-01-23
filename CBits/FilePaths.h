@@ -7,5 +7,7 @@ void CbPathRemoveExtensionA(char* pcszPath);
 const char* CbPathGetFilenameA(const char* pcszPath);
 const char* CbStringSeekEndA(const char* pcszString);
 void CbStringToLowerA(char* pcszString);
+int CbStringStartsWithA(const char* pcszCheck, const char* pcszCheckFor);
+int CbStringStartsWithIA(const char* pcszCheck, const char* pcszCheckFor);
 
 #endif

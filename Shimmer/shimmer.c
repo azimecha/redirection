@@ -3,6 +3,7 @@
 #include <ConfigReading.h>
 #include <RewriteImports.h>
 
+#define SHIMMER_WAIT_BEFORE_BEGIN
 #define SHIMMER_WAIT_BEFORE_RESUME
 
 #define WIN32_LEAN_AND_MEAN
@@ -27,9 +28,14 @@ static SIZE_T s_nBytesRead;
 static char s_szINIPath[MAX_PATH + 1] = { 0 };
 static char s_szRedirDLLName[MAX_PATH + 1] = { 0 };
 
-void ENTRY_POINT(void) {	
+void ENTRY_POINT(void) {
 	// the rest of the command line after our own executable's name gets passed on directly
 	s_pszCommandLine = (LPSTR)CbGetNextArgument(GetCommandLineA(), '^');
+
+#ifdef SHIMMER_WAIT_BEFORE_BEGIN
+	printf("Press any key to start...\r\n");
+	(void)getchar();
+#endif
 
 	s_infStartup.cb = sizeof(s_infStartup);
 	if (!CreateProcessA(NULL, s_pszCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &s_infStartup, &s_infProcess)) {

@@ -333,3 +333,19 @@ int stricmp(const char* a, const char* b) {
 	else
 		return 0;
 }
+
+int strccat(char* pszDest, size_t nDestBufSize, const char* pcszSrc) {
+	while (*pszDest && (nDestBufSize > 0)) {
+		pszDest++;
+		nDestBufSize--;
+	}
+
+	while (*pcszSrc && (nDestBufSize > 0)) {
+		*pszDest = *pcszSrc;
+		pszDest++;
+		pcszSrc++;
+		nDestBufSize--;
+	}
+
+	return *pcszSrc == 0;
+}
