@@ -1,4 +1,4 @@
-add_executable (shimmer shimmer.c)
+add_public_executable (shimmer shimmer.c)
 
 target_link_libraries (shimmer
 	patching cbits

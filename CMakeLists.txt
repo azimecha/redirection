@@ -14,11 +14,30 @@ function (target_import_def tgt_name def_path)
 	target_link_libraries (${tgt_name} PRIVATE "${lib_path}")
 endfunction ()
 
+function (target_fix_pe tgt_name)
+	add_custom_command (TARGET ${tgt_name} POST_BUILD
+		COMMAND fixpe "$<TARGET_FILE:${tgt_name}>"
+		VERBATIM
+		DEPENDS fixpe
+		COMMENT "Fixing any PE file issues with ${tgt_name}"
+	)
+endfunction ()
+
+function (add_public_executable tgt_name)
+	add_executable (${tgt_name} ${ARGN})
+	target_fix_pe (${tgt_name})
+endfunction ()
+
+function (add_public_library tgt_name)
+	add_library (${tgt_name} ${ARGN})
+	target_fix_pe (${tgt_name})
+endfunction ()
+
 function (add_redir_dll dll_name orig_name)
 	file (GLOB dll_headers *.h)
 	file (GLOB dll_sources *.c)
 	
-	add_library (${dll_name} SHARED ${dll_name}.def ${dll_headers} ${dll_sources} ${ARGN})
+	add_public_library (${dll_name} SHARED ${dll_name}.def ${dll_headers} ${dll_sources} ${ARGN})
 	target_link_options (${dll_name} PRIVATE /nodefaultlib:${orig_name}.lib)
 	target_import_def (${dll_name} ${CMAKE_CURRENT_SOURCE_DIR}/${orig_name}.def)
 	target_link_libraries (${dll_name} PRIVATE ways)
@@ -67,6 +86,7 @@ endforeach (OUTPUTCONFIG CMAKE_CONFIGURATION_TYPES)
 add_subdirectory (CBits)
 add_subdirectory (Patching)
 add_subdirectory (DumpDef)
+add_subdirectory (FixPE)
 add_subdirectory (Shimmer)
 add_subdirectory (Interceptor)
 add_subdirectory (Kernel32)
