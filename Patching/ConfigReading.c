@@ -202,8 +202,8 @@ BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nB
 
 	// convert NT name to unicode
 
-	asNTName.Buffer = pcszNTName;
-	asNTName.Length = strlen(pcszNTName);
+	asNTName.Buffer = (char*)pcszNTName;
+	asNTName.Length = (USHORT)strlen(pcszNTName);
 	asNTName.MaximumLength = asNTName.Length;
 
 	usNTName.Buffer = wzNTName;

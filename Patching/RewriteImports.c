@@ -50,25 +50,44 @@ BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory,
 	xpNTHeaders = (LPBYTE)xpImageBase + hdrDOS.e_lfanew;
 	procDisplayInfo(pUserData, "NT headers at: 0x%08X\r\n", (uintptr_t)xpNTHeaders);
 
-	// read the NT header and find the import directory
+	// read the NT header
 	if (!procReadMemory(xpNTHeaders, sizeof(hdrNT), &hdrNT, pUserData)) {
 		procDisplayError(pUserData, "Error 0x%08X reading image NT headers\r\n", GetLastError());
 		return FALSE;
 	}
+
 
 	if (hdrNT.Signature != mmioFOURCC('P', 'E', 0, 0)) {
 		procDisplayError(pUserData, "Image NT header does not start with PE\r\n");
 		return FALSE;
 	}
 
-	if (hdrNT.OptionalHeader.NumberOfRvaAndSizes < 2) {
-		procDisplayError(pUserData, "Image has no import directory (directory count is %u)\r\n", hdrNT.OptionalHeader.NumberOfRvaAndSizes);
+#if 0
+	// fix system version
+	hdrNT.OptionalHeader.MajorOperatingSystemVersion = 5;
+	hdrNT.OptionalHeader.MinorOperatingSystemVersion = 0;
+	hdrNT.OptionalHeader.MajorSubsystemVersion = 5;
+	hdrNT.OptionalHeader.MinorSubsystemVersion = 0;
+	if (!procWriteMemory(&hdrNT, xpNTHeaders, sizeof(hdrNT), pUserData)) {
+		procDisplayError(pUserData, "Error 0x%08X writing image NT headers\r\n", GetLastError());
 		return FALSE;
+	}
+#endif
+
+	// get import directory
+	if (hdrNT.OptionalHeader.NumberOfRvaAndSizes < 2) {
+		procDisplayInfo(pUserData, "Image has no import directory (directory count is %u)\r\n", hdrNT.OptionalHeader.NumberOfRvaAndSizes);
+		return TRUE;
 	}
 
 	xpImports = (LPBYTE)xpImageBase + hdrNT.OptionalHeader.DataDirectory[1].VirtualAddress;
 	nSizeImports = hdrNT.OptionalHeader.DataDirectory[1].Size;
 	procDisplayInfo(pUserData, "Import directory: location 0x%08X, size %u\r\n", (uintptr_t)xpImports, (uintptr_t)nSizeImports);
+
+	if (nSizeImports == 0) {
+		procDisplayInfo(pUserData, "Image has no import directory (size is 0)\r\n", hdrNT.OptionalHeader.NumberOfRvaAndSizes);
+		return TRUE;
+	}
 
 	return s_RewriteTable(xpImports, nSizeImports, xpImageBase, &funcs);
 }

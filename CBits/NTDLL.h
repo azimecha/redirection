@@ -282,18 +282,33 @@ typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
 	};
 } LDR_DATA_TABLE_ENTRY_FULL, * PLDR_DATA_TABLE_ENTRY_FULL;
 
+// https://www.nirsoft.net/kernel_struct/vista/SECTION_IMAGE_INFORMATION.html
 typedef struct _SECTION_IMAGE_INFORMATION {
-	PVOID                   EntryPoint;
-	ULONG                   StackZeroBits;
-	ULONG                   StackReserved;
-	ULONG                   StackCommit;
-	ULONG                   ImageSubsystem;
-	WORD                    SubSystemVersionLow;
-	WORD                    SubSystemVersionHigh;
-	ULONG                   Unknown1;
-	ULONG                   ImageCharacteristics;
-	ULONG                   ImageMachineType;
-	ULONG                   Unknown2[3];
+	PVOID TransferAddress;
+	ULONG ZeroBits;
+	ULONG MaximumStackSize;
+	ULONG CommittedStackSize;
+	ULONG SubSystemType;
+	union {
+		struct {
+			WORD SubSystemMinorVersion;
+			WORD SubSystemMajorVersion;
+		};
+		ULONG SubSystemVersion;
+	};
+	ULONG GpValue;
+	WORD ImageCharacteristics;
+	WORD DllCharacteristics;
+	WORD Machine;
+	UCHAR ImageContainsCode;
+	UCHAR ImageFlags;
+	ULONG ComPlusNativeReady : 1;
+	ULONG ComPlusILOnly : 1;
+	ULONG ImageDynamicallyRelocated : 1;
+	ULONG Reserved : 5;
+	ULONG LoaderFlags;
+	ULONG ImageFileSize;
+	ULONG CheckSum;
 } SECTION_IMAGE_INFORMATION, * PSECTION_IMAGE_INFORMATION;
 
 typedef enum _SECTION_INFORMATION_CLASS {
@@ -309,10 +324,13 @@ typedef enum _MEMORY_INFORMATION_CLASS {
 	MemorySectionName
 } MEMORY_INFORMATION_CLASS, * PMEMORY_INFORMATION_CLASS;
 
+typedef NTSTATUS (__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, 
+	PULONG pnResultSize);
+
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall NtQueryInformationFile(HANDLE hFile, PIO_STATUS_BLOCK piosb, PVOID pInfoBuffer, ULONG nBufSize, FILE_INFORMATION_CLASS iclass);
-NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, PULONG pResultSize);
+NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, PULONG pnResultSize);
 NTSTATUS __stdcall NtUnmapViewOfSection(HANDLE hProcess, PVOID pBaseAddress);
 NTSTATUS __stdcall NtQueryVirtualMemory(HANDLE hProcess, PVOID pBaseAddress, MEMORY_INFORMATION_CLASS iclass, PVOID pBuffer, ULONG nBufSize,
 	PULONG pnResultSize);

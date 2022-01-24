@@ -1,4 +1,4 @@
-#include "Intercept.h"
+#include "InterceptDLLs.h"
 #include <HookFunction.h>
 #include <NTDLL.h>
 #include <PartialStdio.h>
@@ -39,19 +39,19 @@ static NtMapViewOfSection_t s_procRealMapViewOfSection;
 static char s_szConfigPath[MAX_PATH];
 static char s_mszExcludePaths[4096];
 
-BOOL ApplyLoadingHooks(void) {
+BOOL ApplyLibraryLoadHooks(void) {
 	NtCreateSection_t procCreateSection;
 	NtMapViewOfSection_t procMapViewOfSection;
 	LPSTR pszExcludePath;
 	
 	// would prefer not to do this while holding the loader lock...
 	if (!PaFindConfigFileDirect("shims.ini", GetCurrentProcess(), s_szConfigPath, sizeof(s_szConfigPath))) {
-		dprintf("[ApplyLoadingHooks] PaFindConfigFileDirect failed with error 0x%08X\r\n", GetLastError());
-		return FALSE;
+		dprintf("[ApplyLibraryLoadHooks] PaFindConfigFileDirect failed with error 0x%08X\r\n", GetLastError());
+		return TRUE; // no shims? ok. just don't do anything then
 	}
 
 	if (GetPrivateProfileSectionA("Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths), s_szConfigPath) >= (sizeof(s_mszExcludePaths) - 2)) {
-		dprintf("[ApplyLoadingHooks] Too many exclude paths!\r\n");
+		dprintf("[ApplyLibraryLoadHooks] Too many exclude paths!\r\n");
 		return FALSE;
 	}
 
@@ -63,13 +63,13 @@ BOOL ApplyLoadingHooks(void) {
 #ifdef WAYS_INTERCEPT_SECTION
 	procCreateSection = CbGetNTDLLFunction("NtCreateSection");
 	if (procCreateSection == NULL) {
-		dprintf("[ApplyLoadingHooks] NtCreateSection not found!\r\n");
+		dprintf("[ApplyLibraryLoadHooks] NtCreateSection not found!\r\n");
 		return FALSE;
 	}
 
 	s_procRealCreateSection = PaHookSimpleFunction(procCreateSection, 16, s_InterceptedCreateSection);
 	if (s_procRealCreateSection == NULL) {
-		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction for NtCreateSection failed with error 0x%08X\r\n", GetLastError());
+		dprintf("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtCreateSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
 #endif
@@ -77,13 +77,13 @@ BOOL ApplyLoadingHooks(void) {
 #ifdef WAYS_INTERCEPT_MAPPING
 	procMapViewOfSection = CbGetNTDLLFunction("NtMapViewOfSection");
 	if (procMapViewOfSection == NULL) {
-		dprintf("[ApplyLoadingHooks] NtMapViewOfSection not found!\r\n");
+		dprintf("[ApplyLibraryLoadHooks] NtMapViewOfSection not found!\r\n");
 		return FALSE;
 	}
 
 	s_procRealMapViewOfSection = PaHookSimpleFunction(procMapViewOfSection, 16, s_InterceptedMapViewOfSection);
 	if (s_procRealMapViewOfSection == NULL) {
-		dprintf("[ApplyLoadingHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
+		dprintf("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
 #endif

@@ -1,9 +1,13 @@
-#include "Intercept.h"
+#include "InterceptDLLs.h"
+#include "InterceptEXEs.h"
+
+#define _X86_
+#include <minwindef.h>
 
 BOOL WINAPI ENTRY_POINT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
-        return ApplyLoadingHooks();
+        return ApplyLibraryLoadHooks() && ApplyProcessCreationHooks();
 
     case DLL_THREAD_ATTACH:
         break;

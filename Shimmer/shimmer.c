@@ -3,7 +3,7 @@
 #include <ConfigReading.h>
 #include <RewriteImports.h>
 
-#define SHIMMER_WAIT_BEFORE_BEGIN
+//#define SHIMMER_WAIT_BEFORE_BEGIN
 #define SHIMMER_WAIT_BEFORE_RESUME
 
 #define WIN32_LEAN_AND_MEAN
@@ -105,7 +105,30 @@ static BOOL s_ReadMemory(EXTERNAL_PTR pDestBase, SIZE_T nSize, LPVOID pDestBuffe
 }
 
 static BOOL s_WriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZE_T nSize, LPVOID pUserData) {
-	return WriteProcessMemory(s_infProcess.hProcess, pDestBase, pSrcBuffer, nSize, &s_nBytesRead);
+	DWORD nOldProt, nError;
+
+	if (!VirtualProtectEx(s_infProcess.hProcess, pDestBase, nSize, PAGE_READWRITE, &nOldProt)) {
+		nError = GetLastError();
+		printf("[WriteMemory] VirtualProtectEx (PAGE_READWRITE) on %u bytes at 0x%08X returned error 0x%08X", nSize, (uintptr_t)pDestBase, nError);
+		SetLastError(nError);
+		return FALSE;
+	}
+
+	if (!WriteProcessMemory(s_infProcess.hProcess, pDestBase, pSrcBuffer, nSize, &s_nBytesRead)) {
+		nError = GetLastError();
+		printf("[WriteMemory] WriteProcessMemory on %u bytes at 0x%08X returned error 0x%08X", nSize, (uintptr_t)pDestBase, nError);
+		SetLastError(nError);
+		return FALSE;
+	}
+
+	if (!VirtualProtectEx(s_infProcess.hProcess, pDestBase, nSize, nOldProt, &nOldProt)) {
+		nError = GetLastError();
+		printf("[WriteMemory] VirtualProtectEx (0x%08X) on %u bytes at 0x%08X returned error 0x%08X", nOldProt, nSize, (uintptr_t)pDestBase, nError);
+		SetLastError(nError);
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 static LPCSTR s_GetDLLReplacement(LPCSTR pcszName, LPVOID pUserData) {
@@ -119,3 +142,8 @@ static void s_DisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...) {
 	vprintf(pcszFormat, va);
 	va_end(va);
 }
+
+// for ways.dll
+__declspec(dllexport) int NoRedirectImports = 1;
+__declspec(dllimport) extern int WaysDummy;
+__declspec(dllexport) int __stdcall Dummy(void) { return WaysDummy; }
