@@ -1,4 +1,5 @@
 #include "PartialStdio.h"
+#include "NTDLL.h"
 
 #define STB_SPRINTF_DECORATE(name) name
 #define STB_SPRINTF_IMPLEMENTATION
@@ -348,4 +349,53 @@ int strccat(char* pszDest, size_t nDestBufSize, const char* pcszSrc) {
 	}
 
 	return *pcszSrc == 0;
+}
+
+size_t wcstombs(char* pszDest, const wchar_t* pwzSrc, size_t nMax) {
+	UNICODE_STRING usSrc;
+	ANSI_STRING asDest;
+
+	usSrc.Buffer = pszDest;
+	usSrc.Length = strlen(pszDest);
+	usSrc.MaximumLength = usSrc.Length;
+
+	asDest.Buffer = pszDest;
+	asDest.Length = 0;
+	asDest.MaximumLength = nMax - 1;
+
+	if (RtlUnicodeStringToAnsiString(&asDest, &usSrc, FALSE))
+		return (size_t)-1;
+
+	pszDest[asDest.Length] = 0;
+	return asDest.Length;
+}
+
+size_t mbstowcs(wchar_t* pwzDest, const char* pszSrc, size_t nMax) {
+	UNICODE_STRING usDest;
+	ANSI_STRING asSrc;
+
+	asSrc.Buffer = pszSrc;
+	asSrc.Length = strlen(pszSrc);
+	asSrc.MaximumLength = asSrc.Length;
+
+	usDest.Buffer = pwzDest;
+	usDest.Length = 0;
+	usDest.MaximumLength = nMax - 1;
+
+	if (RtlAnsiStringToUnicodeString(&usDest, &asSrc, FALSE))
+		return (size_t)-1;
+
+	pwzDest[usDest.Length / 2] = 0;
+	return usDest.Length / 2;
+}
+
+size_t wcslen(wchar_t* pcwzString) {
+	size_t nLength = 0;
+
+	while (*pcwzString) {
+		nLength++;
+		pcwzString++;
+	}
+
+	return nLength;
 }

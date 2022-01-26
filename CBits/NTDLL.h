@@ -324,18 +324,45 @@ typedef enum _MEMORY_INFORMATION_CLASS {
 	MemorySectionName
 } MEMORY_INFORMATION_CLASS, * PMEMORY_INFORMATION_CLASS;
 
+// http://undocumented.ntinternals.net/index.html?page=UserMode%2FUndocumented%20Functions%2FNT%20Objects%2FSection%2FSECTION_INHERIT.html
+typedef enum _SECTION_INHERIT {
+	ViewShare = 1,
+	ViewUnmap = 2
+} SECTION_INHERIT, * PSECTION_INHERIT;
+
 typedef NTSTATUS (__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, 
 	PULONG pnResultSize);
 
-NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
-NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall NtQueryInformationFile(HANDLE hFile, PIO_STATUS_BLOCK piosb, PVOID pInfoBuffer, ULONG nBufSize, FILE_INFORMATION_CLASS iclass);
 NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, PULONG pnResultSize);
 NTSTATUS __stdcall NtUnmapViewOfSection(HANDLE hProcess, PVOID pBaseAddress);
 NTSTATUS __stdcall NtQueryVirtualMemory(HANDLE hProcess, PVOID pBaseAddress, MEMORY_INFORMATION_CLASS iclass, PVOID pBuffer, ULONG nBufSize,
 	PULONG pnResultSize);
+NTSTATUS __stdcall NtRaiseHardError(LONG nStatus, ULONG nParams, ULONG nMask, PULONG_PTR pnParams, ULONG nValidOptions, PULONG pnRespOption);
+NTSTATUS __stdcall NtTerminateProcess(HANDLE hProcess, NTSTATUS nExitStatus);
+NTSTATUS __stdcall NtMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
+	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, SECTION_INHERIT inherit,
+	ULONG nAllocationType, ULONG nWin32Protection);
+
+NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
+NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
 ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status);
+void __stdcall RtlFreeUnicodeString(PUNICODE_STRING pusFromRtl);
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
+
+typedef enum _enum_CbSeverity {
+	CbSeverityNull,
+	CbSeverityInfo,
+	CbSeverityWarning,
+	CbSeverityError
+} CbSeverity_t;
+
+// These functions display a message box without loading/calling anything other than NTDLL
+// Note: CbDisplayMessageA will allocate/free memory
+
+NTSTATUS CbDisplayMessageUni(PUNICODE_STRING pusTitle, PUNICODE_STRING pusMessage, CbSeverity_t sev);
+NTSTATUS CbDisplayMessageA(LPCSTR pcszTitle, LPCSTR pcszMessage, CbSeverity_t sev);
+NTSTATUS CbDisplayMessageW(LPCWSTR pcwzTitle, LPCWSTR pcwzMessage, CbSeverity_t sev);
 
 #endif

@@ -21,4 +21,8 @@ int stricmp(const char* a, const char* b);
 // returns 1 if it was able to concat the whole thing, 0 otherwise
 int strccat(char* pszDest, size_t nDestBufSize, const char* pcszSrc);
 
+// these functions will always null terminate properly, are reentrant, and will return -1 if not enough space
+size_t wcstombs(char* pszDest, const wchar_t* pwzSrc, size_t nMax);
+size_t mbstowcs(wchar_t* pwzDest, const char* pszSrc, size_t nMax);
+
 #endif

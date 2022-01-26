@@ -2,6 +2,7 @@
 #include <FilePaths.h>
 #include <ConfigReading.h>
 #include <RewriteImports.h>
+#include <InjectDLL.h>
 
 //#define SHIMMER_WAIT_BEFORE_BEGIN
 #define SHIMMER_WAIT_BEFORE_RESUME
@@ -22,11 +23,12 @@ static STARTUPINFOA s_infStartup = { 0 };
 static PROCESS_INFORMATION s_infProcess = { 0 };
 static LPSTR s_pszCommandLine;
 static CONTEXT s_ctxThreadZero;
-static EXTERNAL_PTR s_xpPEB, s_xpImageBase;
+static EXTERNAL_PTR s_xpPEB, s_xpImageBase, s_xpMorningBase, s_xpNewEntryPoint, s_xpOldEntryPointStorage, s_xpOldEntryPoint;
 static PEB s_peb;
 static SIZE_T s_nBytesRead;
 static char s_szINIPath[MAX_PATH + 1] = { 0 };
 static char s_szRedirDLLName[MAX_PATH + 1] = { 0 };
+static PaModuleHandle s_hMorningGlory;
 
 void ENTRY_POINT(void) {
 	// the rest of the command line after our own executable's name gets passed on directly
@@ -55,13 +57,15 @@ void ENTRY_POINT(void) {
 
 	// http://www.rohitab.com/discuss/topic/40262-dynamic-forking-process-hollowing/
 	// "The eax register is the entry point of the process's executable, and the ebx register is the address of the process's PEB."
-	s_ctxThreadZero.ContextFlags = CONTEXT_INTEGER;
+	// (The "entry point" in that quote isn't the base thunk, it's the "real" entry point)
+	s_ctxThreadZero.ContextFlags = CONTEXT_ALL;
 	if (!GetThreadContext(s_infProcess.hThread, &s_ctxThreadZero)) {
 		printf("Error 0x%08X querying thread context\r\n", GetLastError());
 		goto L_errorexit;
 	}
 
 	s_xpPEB = (EXTERNAL_PTR)s_ctxThreadZero.Ebx;
+	s_xpOldEntryPoint = (EXTERNAL_PTR)s_ctxThreadZero.Eip;
 	printf("Process environment block at: 0x%08X\r\n", (uintptr_t)s_xpPEB);
 
 	if (!ReadProcessMemory(s_infProcess.hProcess, s_xpPEB, &s_peb, sizeof(s_peb), &s_nBytesRead)) {
@@ -80,8 +84,55 @@ void ENTRY_POINT(void) {
 		goto L_errorexit;
 	}
 
+	// open pre-load dll
+	s_hMorningGlory = PaModuleOpen("morning.dll", s_DisplayMessage, s_DisplayMessage, NULL);
+	if (s_hMorningGlory == NULL) {
+		printf("Error 0x%08X loading morning.dll\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	printf("MorningGlory DLL: %s\r\n", PaModuleGetFilePath(s_hMorningGlory));
+
+	// inject into process
+	s_xpMorningBase = PaInjectWithoutLoad(s_hMorningGlory, s_infProcess.hProcess);
+	if (s_xpMorningBase == NULL) {
+		printf("Error 0x%08X injecting morning.dll\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	printf("Injected into process at address 0x%08X\r\n", (UINT_PTR)s_xpMorningBase);
+
+	// store old entry point
+	s_xpOldEntryPointStorage = PaGetRemoteSymbol(s_hMorningGlory, s_xpMorningBase, "ProcessStartThunk");
+	if (s_xpOldEntryPointStorage == NULL) {
+		printf("Could not find ProcessStartThunk symbol in morning.dll (error 0x%08X)\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	printf("Storing old entry point 0x%08X at address 0x%08X\r\n", (UINT_PTR)s_xpOldEntryPoint, (UINT_PTR)s_xpOldEntryPointStorage);
+	
+	if (!s_WriteMemory(&s_xpOldEntryPoint, s_xpOldEntryPointStorage, sizeof(s_xpOldEntryPoint), NULL)) {
+		printf("Error 0x%08X writing old entry point to address 0x%08X\r\n", GetLastError(), (UINT_PTR)s_xpOldEntryPointStorage);
+		goto L_errorexit;
+	}
+
+	// find new entry point
+	s_xpNewEntryPoint = PaGetRemoteSymbol(s_hMorningGlory, s_xpMorningBase, "ProcessEntryPoint");
+	if (s_xpNewEntryPoint == NULL) {
+		printf("Could not find ProcessEntryPoint symbol in morning.dll (error 0x%08X)\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	// replace instruction pointer
+	s_ctxThreadZero.Eip = (DWORD)s_xpNewEntryPoint;
+	s_ctxThreadZero.ContextFlags = CONTEXT_CONTROL;
+	if (!SetThreadContext(s_infProcess.hThread, &s_ctxThreadZero)) {
+		printf("Error 0x%08X setting context of thread %u\r\n", GetLastError(), s_infProcess.dwThreadId);
+		goto L_errorexit;
+	}
+
 #ifdef SHIMMER_WAIT_BEFORE_RESUME
-	printf("Imports have been replaced. Press any key to allow process to run.\r\n");
+	printf("Press any key to allow process to run.\r\n");
 	(void)getchar();
 #endif
 

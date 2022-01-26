@@ -1,5 +1,6 @@
 #include "InterceptDLLs.h"
 #include "InterceptEXEs.h"
+#include <NTDLL.h>
 
 #define _X86_
 #include <minwindef.h>
@@ -7,6 +8,7 @@
 BOOL WINAPI ENTRY_POINT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
+        CbDisplayMessageW(L"Magic Ways", L"DLL loaded, press OK when attached.", CbSeverityInfo);
         return ApplyLibraryLoadHooks() && ApplyProcessCreationHooks();
 
     case DLL_THREAD_ATTACH:

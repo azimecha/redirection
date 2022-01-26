@@ -14,17 +14,24 @@ typedef struct _struct_PaRewriteFuncs{
 	LPVOID pUserData;
 } PaRewriteFuncs_t, *PaRewriteFuncs_p;
 
-static BOOL s_RewriteTable(EXTERNAL_PTR xpTable, DWORD nTableSize, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs);
-static BOOL s_RewriteTableDirect(PIMAGE_IMPORT_DESCRIPTOR pdescImports, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs);
+typedef BOOL(* DataDirOperation_t)(LPVOID pDirData, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs);
+static BOOL s_RewriteDataDirectory(PIMAGE_NT_HEADERS phdrNT, DWORD nDirectory, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs,
+	DataDirOperation_t procOperation);
+
+static BOOL s_ReplaceDLLNames(PIMAGE_IMPORT_DESCRIPTOR pdescImports, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, 
+	PaRewriteFuncs_p pfuncs);
+static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdescExports, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, 
+	PaRewriteFuncs_p pfuncs);
+
+static const char s_cszBadForwardPrefix[] = ".dll";
 
 BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory, PaWriteMemoryProc procWriteMemory,
 	PaGetReplacementProc procGetDLLReplacement, PaDisplayMessageProc procDisplayInfo, PaDisplayMessageProc procDisplayError,
 	LPVOID pUserData)
 {
-	LPVOID xpNTHeaders, xpImports;
+	LPVOID xpNTHeaders;
 	IMAGE_DOS_HEADER hdrDOS;
 	IMAGE_NT_HEADERS hdrNT;
-	DWORD nSizeImports;
 	BOOL bSucceeded;
 	PaRewriteFuncs_t funcs;
 
@@ -74,49 +81,63 @@ BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory,
 	}
 #endif
 
-	// get import directory
-	if (hdrNT.OptionalHeader.NumberOfRvaAndSizes < 2) {
-		procDisplayInfo(pUserData, "Image has no import directory (directory count is %u)\r\n", hdrNT.OptionalHeader.NumberOfRvaAndSizes);
-		return TRUE;
-	}
+	// redirect imports
+	if (!s_RewriteDataDirectory(&hdrNT, 1, xpImageBase, &funcs, s_ReplaceDLLNames))
+		return FALSE;
 
-	xpImports = (LPBYTE)xpImageBase + hdrNT.OptionalHeader.DataDirectory[1].VirtualAddress;
-	nSizeImports = hdrNT.OptionalHeader.DataDirectory[1].Size;
-	procDisplayInfo(pUserData, "Import directory: location 0x%08X, size %u\r\n", (uintptr_t)xpImports, (uintptr_t)nSizeImports);
-
-	if (nSizeImports == 0) {
-		procDisplayInfo(pUserData, "Image has no import directory (size is 0)\r\n", hdrNT.OptionalHeader.NumberOfRvaAndSizes);
-		return TRUE;
-	}
-
-	return s_RewriteTable(xpImports, nSizeImports, xpImageBase, &funcs);
+	// fix bad forwards
+	return s_RewriteDataDirectory(&hdrNT, 0, xpImageBase, &funcs, s_FixBadForwards);
 }
 
-static BOOL s_RewriteTable(EXTERNAL_PTR xpTable, DWORD nTableSize, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs) {
-	PIMAGE_IMPORT_DESCRIPTOR pdescImports;
+static BOOL s_RewriteDataDirectory(PIMAGE_NT_HEADERS phdrNT, DWORD nDirectory, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs, 
+	DataDirOperation_t procOperation) 
+{
+	EXTERNAL_PTR xpDirectory;
+	DWORD nDirSize, nDirStartRVA;
+	LPVOID pData;
 	BOOL bSucceeded;
+
+	if (phdrNT->OptionalHeader.NumberOfRvaAndSizes <= nDirectory) {
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "Image has no directory %u (directory count is %u)\r\n", nDirectory, 
+			phdrNT->OptionalHeader.NumberOfRvaAndSizes);
+		return TRUE;
+	}
+
+	nDirStartRVA = phdrNT->OptionalHeader.DataDirectory[nDirectory].VirtualAddress;
+	xpDirectory = (LPBYTE)xpImageBase + nDirStartRVA;
+	nDirSize = phdrNT->OptionalHeader.DataDirectory[nDirectory].Size;
+	pfuncs->procDisplayInfo(pfuncs->pUserData, "Data directory %u: location 0x%08X, size %u\r\n", nDirectory, (uintptr_t)xpDirectory, 
+		(uintptr_t)nDirSize);
+
+	if (nDirSize == 0) {
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "Image has no directory %u (size is 0)\r\n", nDirectory, 
+			phdrNT->OptionalHeader.NumberOfRvaAndSizes);
+		return TRUE;
+	}
 
 	bSucceeded = FALSE;
 
-	pdescImports = HeapAlloc(GetProcessHeap(), 0, nTableSize);
-	if (pdescImports == NULL) {
-		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X allocating memory for import directory table\r\n", GetLastError());
+	pData = HeapAlloc(GetProcessHeap(), 0, nDirSize);
+	if (pData == NULL) {
+		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X allocating memory for directory %u\r\n", GetLastError(), nDirectory);
 		return FALSE;
 	}
 
-	if (!pfuncs->procReadMemory(xpTable, nTableSize, pdescImports, pfuncs->pUserData)) {
-		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X reading import directory table\r\n", GetLastError());
+	if (!pfuncs->procReadMemory(xpDirectory, nDirSize, pData, pfuncs->pUserData)) {
+		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X reading directory %u\r\n", GetLastError(), nDirectory);
 		goto L_exit;
 	}
 
-	bSucceeded = s_RewriteTableDirect(pdescImports, xpImageBase, pfuncs);
+	bSucceeded = procOperation(pData, nDirStartRVA, nDirSize, xpImageBase, pfuncs);
 
 L_exit:
-	HeapFree(GetProcessHeap(), 0, pdescImports);
+	HeapFree(GetProcessHeap(), 0, pData);
 	return bSucceeded;
 }
 
-static BOOL s_RewriteTableDirect(PIMAGE_IMPORT_DESCRIPTOR pdescImports, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs) {
+static BOOL s_ReplaceDLLNames(PIMAGE_IMPORT_DESCRIPTOR pdescImports, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, 
+	PaRewriteFuncs_p pfuncs)
+{
 	char szImportDLLName[MAX_PATH + 1];
 	char szNormalizedImportDLLName[MAX_PATH + 1];
 	LPCSTR pcszReplacementDLL;
@@ -160,4 +181,80 @@ static BOOL s_RewriteTableDirect(PIMAGE_IMPORT_DESCRIPTOR pdescImports, EXTERNAL
 	}
 
 	return TRUE;
+}
+
+// some newer MS DLLs have incorrect forwards - the .dll extension is wrongly included as part of the target DLL name
+// for information on how forwards are stored:
+// https://docs.microsoft.com/en-us/archive/msdn-magazine/2002/march/inside-windows-an-in-depth-look-into-the-win32-portable-executable-file-format-part-2
+static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdirExports, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, 
+	PaRewriteFuncs_p pfuncs) 
+{
+	DWORD nFunction, nFuncAddrsSize;
+	BOOL bSucceeded, bIsForward;
+	LPDWORD pnFunctionAddrs;
+	EXTERNAL_PTR xpFunctionAddrs;
+	LPSTR pszForwardTarget;
+	LPSTR pszForwardFuncName;
+
+	bSucceeded = FALSE;
+	xpFunctionAddrs = (BYTE*)xpImageBase + pdirExports->AddressOfFunctions;
+	nFuncAddrsSize = pdirExports->NumberOfFunctions * sizeof(DWORD);
+
+	if (nFuncAddrsSize == 0)
+		return TRUE;
+
+	// read function RVAs
+	pnFunctionAddrs = HeapAlloc(GetProcessHeap(), 0, nFuncAddrsSize);
+	if (pnFunctionAddrs == NULL) 
+		return FALSE;
+
+	if (!pfuncs->procReadMemory(xpFunctionAddrs, nFuncAddrsSize, pnFunctionAddrs, pfuncs->pUserData)) {
+		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X reading function addresses (%u bytes at 0x%08X)\r\n",
+			GetLastError(), nFuncAddrsSize, xpFunctionAddrs);
+		goto L_exit;
+	}
+
+	// process functions
+	for (nFunction = 0; nFunction < pdirExports->NumberOfFunctions; nFunction++) {
+		// the function is forwarded if the RVA is inside the export directory
+		bIsForward = (pnFunctionAddrs[nFunction] >= nDirStartRVA) && (pnFunctionAddrs[nFunction] < (nDirStartRVA + nDirSize));
+
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "Export %u: %s at RVA 0x%08X%s", nFunction, bIsForward ? "forward" : "code",
+			pnFunctionAddrs[nFunction], bIsForward ?  " -> " : "\r\n");
+
+		if (!bIsForward)
+			continue;
+
+		// get the forwarded name
+		pszForwardTarget = (LPSTR)((BYTE*)pdirExports + (pnFunctionAddrs[nFunction] - nDirStartRVA));
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "%s\r\n", pszForwardTarget);
+
+		pszForwardFuncName = strchr(pszForwardTarget, '.');
+		if (pszForwardFuncName == NULL) {
+			pfuncs->procDisplayError(pfuncs->pUserData, "\tFormat is unrecoverable (no dot anywhere)\r\n");
+			goto L_exit;
+		}
+
+		// check for the .dll extension
+		if (!CbStringStartsWithIA(pszForwardFuncName, s_cszBadForwardPrefix))
+			continue; // no prefix, OK
+
+		// remove the .dll extension
+		memmove(pszForwardFuncName, pszForwardFuncName + sizeof(s_cszBadForwardPrefix) - 1, strlen(pszForwardFuncName) + 2
+			- sizeof(s_cszBadForwardPrefix));
+
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "\tReplaced with %s\r\n", pszForwardFuncName);
+	}
+
+	// write updated export directory
+	if (!pfuncs->procWriteMemory(pdirExports, (BYTE*)xpImageBase + nDirStartRVA, nDirSize, pfuncs->pUserData)) {
+		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X writing updated export directory\r\n", GetLastError());
+		goto L_exit;
+	}
+
+	bSucceeded = TRUE;
+
+L_exit:
+	HeapFree(GetProcessHeap(), 0, pnFunctionAddrs);
+	return bSucceeded;
 }
