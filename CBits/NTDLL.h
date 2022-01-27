@@ -330,6 +330,28 @@ typedef enum _SECTION_INHERIT {
 	ViewUnmap = 2
 } SECTION_INHERIT, * PSECTION_INHERIT;
 
+// https://stackoverflow.com/questions/5454667/how-to-get-the-process-environment-block-peb-from-extern-process
+// https://docs.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess?redirectedfrom=MSDN
+typedef enum _PROCESSINFOCLASS {
+	ProcessBasicInformation = 0,
+	ProcessDebugPort = 7,
+	ProcessWow64Information = 26,
+	ProcessImageFileName = 27,
+	ProcessBreakOnTermination = 29,
+	ProcessSubsystemInformation = 75
+} PROCESSINFOCLASS;
+
+typedef LONG KPRIORITY;
+
+typedef struct _PROCESS_BASIC_INFORMATION {
+	NTSTATUS ExitStatus;
+	PPEB PebBaseAddress;
+	ULONG_PTR AffinityMask;
+	KPRIORITY BasePriority;
+	ULONG_PTR UniqueProcessId;
+	ULONG_PTR InheritedFromUniqueProcessId;
+} PROCESS_BASIC_INFORMATION;
+
 typedef NTSTATUS (__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, 
 	PULONG pnResultSize);
 
@@ -343,6 +365,9 @@ NTSTATUS __stdcall NtTerminateProcess(HANDLE hProcess, NTSTATUS nExitStatus);
 NTSTATUS __stdcall NtMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
 	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, SECTION_INHERIT inherit,
 	ULONG nAllocationType, ULONG nWin32Protection);
+NTSTATUS __stdcall NtSuspendProcess(HANDLE hProcess);
+NTSTATUS __stdcall NtResumeProcess(HANDLE hProcess);
+NTSTATUS __stdcall NtQueryInformationProcess(HANDLE hProcess, PROCESSINFOCLASS iclass, PVOID pBuffer, ULONG nBufSize, PULONG npResultSize);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);

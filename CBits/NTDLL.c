@@ -47,6 +47,9 @@ CB_NTDLL_DEFINE(NtRaiseHardError, (LONG a, ULONG b, ULONG c, PULONG_PTR d, ULONG
 CB_NTDLL_DEFINE(NtTerminateProcess, (HANDLE a, NTSTATUS b), (a, b));
 CB_NTDLL_DEFINE(NtMapViewOfSection, (HANDLE a, HANDLE b, PVOID* c, ULONG_PTR d, SIZE_T e, PLARGE_INTEGER f, PSIZE_T g, DWORD h,
 	ULONG i, ULONG j), (a, b, c, d, e, f, g, h, i, j));
+CB_NTDLL_DEFINE(NtSuspendProcess, (HANDLE a), (a));
+CB_NTDLL_DEFINE(NtResumeProcess, (HANDLE a), (a));
+CB_NTDLL_DEFINE(NtQueryInformationProcess, (HANDLE a, PROCESSINFOCLASS b, PVOID c, ULONG d, PULONG e), (a, b, c, d, e));
 
 CB_NTDLL_DEFINE(RtlAnsiStringToUnicodeString, (PUNICODE_STRING a, PCANSI_STRING b, BOOLEAN c), (a, b, c));
 CB_NTDLL_DEFINE(RtlUnicodeStringToAnsiString, (PANSI_STRING a, PCUNICODE_STRING b, BOOLEAN c), (a, b, c));
