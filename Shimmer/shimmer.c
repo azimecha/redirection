@@ -94,7 +94,7 @@ void ENTRY_POINT(void) {
 	printf("MorningGlory DLL: %s\r\n", PaModuleGetFilePath(s_hMorningGlory));
 
 	// inject into process
-	s_xpMorningBase = PaInjectWithoutLoad(s_hMorningGlory, s_infProcess.hProcess);
+	s_xpMorningBase = PaInjectWithoutLoad(s_hMorningGlory, s_infProcess.hProcess, TRUE);
 	if (s_xpMorningBase == NULL) {
 		printf("Error 0x%08X injecting morning.dll\r\n", GetLastError());
 		goto L_errorexit;

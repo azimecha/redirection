@@ -7,6 +7,7 @@
 
 typedef struct _struct_PaModule* PaModuleHandle;
 typedef EXTERNAL_PTR* PEXTERNAL_PTR;
+typedef EXTERNAL_PTR** PPEXTERNAL_PTR;
 typedef struct _PEB* PPEB;
 
 // Provides the ability to examine DLLs without loading (unless already loaded)

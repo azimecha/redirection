@@ -25,6 +25,8 @@ typedef struct _struct_PaLdrDataTableEntryWithStrings {
 } PaLdrDataTableEntryWithStrings;
 
 static BOOL s_ReadMemoryExternal(EXTERNAL_PTR pSrcBase, SIZE_T nSize, LPVOID pDestBuffer, LPVOID pUserData);
+static DWORD s_InsertListEntry(PaModuleHandle hModule, HANDLE hProcess, PLIST_ENTRY pentThisItemLocal, EXTERNAL_PTR xpPrevListItem, 
+	EXTERNAL_PTR xpThisListItem, EXTERNAL_PTR xpNextListItem);
 
 PaModuleHandle PaModuleOpen(LPCSTR pcszDLLName, PaDisplayMessageProc procDisplayInfo, PaDisplayMessageProc procDisplayError, LPVOID pUserData) {
 	DWORD nError = 0;
@@ -37,6 +39,10 @@ PaModuleHandle PaModuleOpen(LPCSTR pcszDLLName, PaDisplayMessageProc procDisplay
 		procDisplayError(pUserData, "Error 0x%08X allocating %u bytes for module structure\r\n", GetLastError(), sizeof(PaModule));
 		goto L_errorexit;
 	}
+
+	hModule->m_procDisplayInfo = procDisplayInfo;
+	hModule->m_procDisplayError = procDisplayError;
+	hModule->m_pUserData = pUserData;
 
 	// check if we've already loaded the module
 	hModule->m_hModule = GetModuleHandleA(pcszDLLName);
@@ -110,7 +116,7 @@ LPCSTR PaModuleGetFilePath(PaModuleHandle hModule) {
 }
 
 PIMAGE_NT_HEADERS PaModuleGetNTHeaders(PaModuleHandle hModule) {
-	return (LPBYTE)hModule->m_pLocalBase + ((PIMAGE_DOS_HEADER)hModule->m_pLocalBase)->e_lfanew;
+	return (PIMAGE_NT_HEADERS)((LPBYTE)hModule->m_pLocalBase + ((PIMAGE_DOS_HEADER)hModule->m_pLocalBase)->e_lfanew);
 }
 
 void PaModuleClose(PaModuleHandle hModule) {
@@ -127,12 +133,12 @@ void PaModuleClose(PaModuleHandle hModule) {
 EXTERNAL_PTR PaInjectWithoutLoad(PaModuleHandle hModule, HANDLE hTargetProcess, BOOL bRegisterAsLoaded) {
 	DWORD nError = 0;
 	NTSTATUS status = 0;
-	EXTERNAL_PTR pForeignAddress = NULL;
+	EXTERNAL_PTR pForeignAddress = NULL, xpLoaderEntry = NULL;
 	SIZE_T nSize = 0;
 	PaLdrDataTableEntryWithStrings entry;
 	PLDR_DATA_TABLE_ENTRY_FULL pentInLoadOrder = NULL, pentInMemoryOrder = NULL, pentInInitOrder = NULL;
 	SIZE_T nInLoadOrder = 0, nInMemoryOrder = 0, nInInitOrder = 0, nBytesRead, nEntry;
-	PUINT_PTR pxpInLoadOrder = NULL, pxpInMemoryOrder = NULL, pxpInInitOrder = NULL;
+	PEXTERNAL_PTR pxpInLoadOrder = NULL, pxpInMemoryOrder = NULL, pxpInInitOrder = NULL;
 	PIMAGE_NT_HEADERS phdrNT;
 	PEB peb;
 	PEB_LDR_DATA_FULL dataLoader;
@@ -175,9 +181,8 @@ EXTERNAL_PTR PaInjectWithoutLoad(PaModuleHandle hModule, HANDLE hTargetProcess, 
 		phdrNT = PaModuleGetNTHeaders(hModule);
 		RtlSecureZeroMemory(&entry, sizeof(entry));
 		entry.m_entry.DllBase = pForeignAddress;
-		entry.m_entry.EntryPoint = PaModuleGetEntryPoint(hModule);
 		entry.m_entry.SizeOfImage = phdrNT->OptionalHeader.SizeOfImage;
-		entry.m_entry.EntryPoint = phdrNT->OptionalHeader.AddressOfEntryPoint;
+		entry.m_entry.EntryPoint = (BYTE*)pForeignAddress + phdrNT->OptionalHeader.AddressOfEntryPoint;
 
 		// suspend the process to prevent race conditions wrt. modules list
 		status = NtSuspendProcess(hTargetProcess);
@@ -246,28 +251,55 @@ EXTERNAL_PTR PaInjectWithoutLoad(PaModuleHandle hModule, HANDLE hTargetProcess, 
 		hModule->m_procDisplayInfo(hModule->m_pUserData, "Initialization order list: %u modules, array at 0x%08X local, xptrs at 0x%08X local\r\n",
 			nInInitOrder, pentInInitOrder, pxpInInitOrder);
 
-		// set list pointers
-		entry.m_entry.InLoadOrderLinks.Blink = pxpInLoadOrder
-			? pxpInLoadOrder[nInLoadOrder - 1] + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks)
-			: NULL;
+		// allocate space for new entry
+		xpLoaderEntry = VirtualAllocEx(hTargetProcess, NULL, sizeof(entry), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		if (xpLoaderEntry == NULL) {
+			nError = GetLastError();
+			hModule->m_procDisplayError(hModule->m_pUserData, "Error 0x%08X allocating %u bytes in target process for loader entry\r\n",
+				nError, sizeof(entry));
+			goto L_exit;
+		}
+
+		// set list pointers for load-order list
+		nError = s_InsertListEntry(hModule, hTargetProcess, &entry.m_entry.InLoadOrderLinks,
+			pxpInLoadOrder ? (BYTE*)pxpInLoadOrder[nInLoadOrder - 1] + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks) : NULL,
+			(BYTE*)xpLoaderEntry + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks), NULL);
+		if (nError != 0) goto L_exit;
 
 		hModule->m_procDisplayInfo(hModule->m_pUserData, "Previous module in load order at 0x%08X\r\n", entry.m_entry.InLoadOrderLinks.Blink);
 
-		entry.m_entry.InInitializationOrderLinks.Blink = pxpInInitOrder
-			? pxpInInitOrder[nInInitOrder - 1] + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InInitializationOrderLinks)
-			: NULL;
+		// set list pointers for init-order list
+		nError = s_InsertListEntry(hModule, hTargetProcess, &entry.m_entry.InInitializationOrderLinks,
+			pxpInInitOrder ? (BYTE*)pxpInInitOrder[nInInitOrder - 1] + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InInitializationOrderLinks) : NULL,
+			(BYTE*)xpLoaderEntry + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InInitializationOrderLinks), NULL);
+		if (nError != 0) goto L_exit;
 
 		hModule->m_procDisplayInfo(hModule->m_pUserData, "Previous module in init order at 0x%08X\r\n", entry.m_entry.InInitializationOrderLinks.Blink);
 
+		// set list pointers for memory-order-list
+		// nEntry will be the _next_ item after this one
 		for (nEntry = 0; nEntry < nInMemoryOrder; nEntry++) {
 			if (pentInMemoryOrder[nEntry].DllBase > entry.m_entry.DllBase)
 				break;
 		}
-		
-		// TODO: Set in-memory order field
-		// TODO: Update tail items in process
 
-	L_resume: // resume the process
+		nError = s_InsertListEntry(hModule, hTargetProcess, &entry.m_entry.InMemoryOrderLinks, 
+			pxpInMemoryOrder ? pxpInMemoryOrder[nEntry] : NULL, 
+			(BYTE*)xpLoaderEntry + FIELD_OFFSET(LDR_DATA_TABLE_ENTRY_FULL, InMemoryOrderLinks),
+			(nEntry < (nInMemoryOrder - 1)) ? pxpInMemoryOrder[nEntry] : NULL);
+		if (nError != 0) goto L_exit;
+
+		hModule->m_procDisplayInfo(hModule->m_pUserData, "Previous module in memory order at 0x%08X\r\n", entry.m_entry.InInitializationOrderLinks.Blink);
+		hModule->m_procDisplayInfo(hModule->m_pUserData, "Next module in memory order at 0x%08X\r\n", entry.m_entry.InInitializationOrderLinks.Flink);
+
+		// copy entry into process memory
+		if (!WriteProcessMemory(hTargetProcess, xpLoaderEntry, &entry, sizeof(entry), &nBytesRead)) {
+			nError = GetLastError();
+			hModule->m_procDisplayError(hModule->m_pUserData, "Error 0x%08X copying list entry into process\r\n", nError);
+			goto L_exit;
+		}
+
+		//L_resume: // resume the process
 		status = NtResumeProcess(hTargetProcess);
 		if (status != 0) {
 			nError = RtlNtStatusToDosError(status);
@@ -286,6 +318,70 @@ L_exit:
 	if (pxpInInitOrder != NULL) PaFreeListItems(pxpInInitOrder);
 	SetLastError(nError);
 	return (!bRegisterAsLoaded || bDidRegister) ? pForeignAddress : NULL;
+}
+
+static DWORD s_InsertListEntry(PaModuleHandle hModule, HANDLE hProcess, PLIST_ENTRY pentThisItemLocal, EXTERNAL_PTR xpPrevListItem,
+	EXTERNAL_PTR xpThisListItem, EXTERNAL_PTR xpNextListItem)
+{
+	LIST_ENTRY entryPrev, entryNext;
+	SIZE_T nBytesRead;
+	DWORD nError;
+
+	if (xpPrevListItem != NULL) {
+		if (!ReadProcessMemory(hProcess, xpPrevListItem, &entryPrev, sizeof(LIST_ENTRY), &nBytesRead)) {
+			nError = GetLastError();
+			hModule->m_procDisplayError(hModule->m_pUserData, "Error 0x%08X reading previous list entry\r\n", nError);
+			return nError;
+		}
+	}
+
+	if (xpNextListItem != NULL) {
+		if (!ReadProcessMemory(hProcess, xpNextListItem, &entryNext, sizeof(LIST_ENTRY), &nBytesRead)) {
+			nError = GetLastError();
+			hModule->m_procDisplayError(hModule->m_pUserData, "Error 0x%08X reading next list entry\r\n", nError);
+			return nError;
+		}
+	}
+
+	if ((xpPrevListItem == NULL) && (xpNextListItem == NULL)) {
+		// only item in list
+		pentThisItemLocal->Blink = NULL;
+		pentThisItemLocal->Flink = NULL;
+	} else if (xpPrevListItem == NULL) {
+		// first item in list
+		pentThisItemLocal->Blink = NULL;
+		pentThisItemLocal->Flink = xpNextListItem;
+		entryNext.Blink = xpThisListItem;
+	} else if (xpNextListItem == NULL) {
+		// last item in list
+		pentThisItemLocal->Blink = xpPrevListItem;
+		pentThisItemLocal->Flink = NULL;
+		entryPrev.Flink = xpThisListItem;
+	} else {
+		// not first or last
+		pentThisItemLocal->Blink = xpPrevListItem;
+		pentThisItemLocal->Flink = xpNextListItem;
+		entryPrev.Flink = xpThisListItem;
+		entryNext.Blink = xpThisListItem;
+	}
+
+	if (xpPrevListItem != NULL) {
+		if (!WriteProcessMemory(hProcess, xpPrevListItem, &entryPrev, sizeof(LIST_ENTRY), &nBytesRead)) {
+			nError = GetLastError();
+			hModule->m_procDisplayError(hModule->m_pUserData, "Error 0x%08X writing previous list entry\r\n", nError);
+			return nError;
+		}
+	}
+
+	if (xpNextListItem != NULL) {
+		if (!WriteProcessMemory(hProcess, xpNextListItem, &entryNext, sizeof(LIST_ENTRY), &nBytesRead)) {
+			nError = GetLastError();
+			hModule->m_procDisplayError(hModule->m_pUserData, "Error 0x%08X writing next list entry\r\n", nError);
+			return nError;
+		}
+	}
+
+	return 0;
 }
 
 EXTERNAL_PTR PaGetRemoteSymbol(PaModuleHandle hModule, EXTERNAL_PTR pBaseAddress, LPCSTR pcszSymbolName) {
