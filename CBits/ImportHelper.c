@@ -7,6 +7,14 @@
 #include <Windows.h>
 #include <Vfw.h>
 
+#ifndef STATUS_INVALID_IMAGE_FORMAT
+#define STATUS_INVALID_IMAGE_FORMAT 0xC000007B
+#endif
+
+#ifndef STATUS_INVALID_PARAMETER_2
+#define STATUS_INVALID_PARAMETER_2 0xC00000F0
+#endif
+
 PLDR_DATA_TABLE_ENTRY_FULL CbGetLoadedImageByIndex(unsigned nIndex) {
 	PPEB_LDR_DATA_FULL pdataLoader;
 	PLDR_DATA_TABLE_ENTRY_FULL pentCur;
@@ -43,7 +51,7 @@ PLDR_DATA_TABLE_ENTRY_FULL CbGetLoadedImageByName(LPCSTR pcszModuleName) {
 	pszDesiredModuleName = CbNormalizeModuleName(szDesiredModuleName);
 
 	pdataLoader = (PPEB_LDR_DATA_FULL)(CbGetPEB()->Ldr);
-	pentFirst = &pdataLoader->InLoadOrderModuleList;
+	pentFirst = CONTAINING_RECORD(&pdataLoader->InLoadOrderModuleList, LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks);
 	pentCur = CONTAINING_RECORD(pdataLoader->InLoadOrderModuleList.Flink, LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks);
 
 	asCurModuleFullName.Buffer = szCurModuleFullName;
@@ -69,6 +77,19 @@ PLDR_DATA_TABLE_ENTRY_FULL CbGetLoadedImageByName(LPCSTR pcszModuleName) {
 }
 
 LPVOID CbGetSymbolAddress(LPVOID pImageBase, LPCSTR pcszSymbolName) {
+	LPVOID pSymbol;
+	NTSTATUS status;
+
+	status = (NTSTATUS)CbGetSymbolAddressEx(pImageBase, pcszSymbolName, 0, &pSymbol);
+	if (status != 0) {
+		CbGetTEB()->LastErrorValue = RtlNtStatusToDosError(status);
+		return NULL;
+	}
+
+	return pSymbol;
+}
+
+NTSTATUS CbGetSymbolAddressEx(LPVOID pImageBase, LPCSTR pcszSymbolName, WORD nOrdinal, OUT LPVOID* ppSymbol) {
 	PIMAGE_DOS_HEADER phdrDOS;
 	PIMAGE_NT_HEADERS phdrNT;
 	PIMAGE_EXPORT_DIRECTORY pdirExports;
@@ -78,18 +99,16 @@ LPVOID CbGetSymbolAddress(LPVOID pImageBase, LPCSTR pcszSymbolName) {
 	DWORD nName;
 	LPCSTR pcszCurName;
 
+	// find the library's NT headers
 	phdrDOS = (PIMAGE_DOS_HEADER)pImageBase;
-	if (phdrDOS->e_magic != MAKEWORD('M', 'Z')) {
-		CbGetTEB()->LastErrorValue = ERROR_INVALID_EXE_SIGNATURE;
-		return NULL;
-	}
+	if (phdrDOS->e_magic != MAKEWORD('M', 'Z'))
+		return STATUS_INVALID_IMAGE_FORMAT;
 
 	phdrNT = (PIMAGE_NT_HEADERS)((BYTE*)phdrDOS + phdrDOS->e_lfanew);
-	if (phdrNT->Signature != mmioFOURCC('P', 'E', 0, 0)) {
-		CbGetTEB()->LastErrorValue = ERROR_INVALID_EXE_SIGNATURE;
-		return NULL;
-	}
+	if (phdrNT->Signature != mmioFOURCC('P', 'E', 0, 0))
+		return STATUS_INVALID_IMAGE_FORMAT;
 
+	// find the export directory
 	if (phdrNT->OptionalHeader.DataDirectory[0].Size == 0) goto L_notfound;
 	pdirExports = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)phdrDOS + phdrNT->OptionalHeader.DataDirectory[0].VirtualAddress);
 	if (pdirExports == NULL) goto L_notfound;
@@ -103,15 +122,35 @@ LPVOID CbGetSymbolAddress(LPVOID pImageBase, LPCSTR pcszSymbolName) {
 	pnFunctionRVAs = (LPDWORD)((BYTE*)phdrDOS + pdirExports->AddressOfFunctions);
 	if (pnNameRVAs == NULL) goto L_notfound;
 
-	for (nName = 0; nName < pdirExports->NumberOfNames; nName++) {
-		pcszCurName = (LPCSTR)((BYTE*)phdrDOS + pnNameRVAs[nName]);
-		if (stricmp(pcszCurName, pcszSymbolName) == 0)
-			return (BYTE*)phdrDOS + pnFunctionRVAs[pnOrdinals[nName]];
+	// safer to prioritize name over ordinal if name was specified
+	if (pcszSymbolName) {
+		// find by name
+		for (nName = 0; nName < pdirExports->NumberOfNames; nName++) {
+			pcszCurName = (LPCSTR)((BYTE*)phdrDOS + pnNameRVAs[nName]);
+			if (stricmp(pcszCurName, pcszSymbolName) == 0) {
+				*ppSymbol = (BYTE*)phdrDOS + pnFunctionRVAs[pnOrdinals[nName]];
+				return 0;
+			}
+		}
+
+		// if the name wasn't found, don't blindly use the ordinal
+		goto L_notfound;
 	}
 
-L_notfound:
-	CbGetTEB()->LastErrorValue = ERROR_NOT_FOUND;
-	return NULL;
+	// find by ordinal (no name was given)
+	if (nOrdinal) {
+		if (nOrdinal > pdirExports->NumberOfFunctions)
+			goto L_notfound;
+
+		*ppSymbol = (BYTE*)phdrDOS + pnFunctionRVAs[nOrdinal];
+		return 0;
+	}
+
+	// neither name nor ordinal was given, return the most infuriating error code
+	return STATUS_INVALID_PARAMETER_2;
+
+L_notfound: // we get here if something went wrong
+	return STATUS_ENTRYPOINT_NOT_FOUND;
 }
 
 LPSTR CbNormalizeModuleName(LPSTR pszName) {

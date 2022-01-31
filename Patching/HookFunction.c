@@ -2,19 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <string.h>
-
-#define PA_HOOK_INSTR_CALL 0xE8
-#define PA_HOOK_INSTR_JMP 0xE9
-#define PA_HOOK_INSTR_PUSH 0x68
-#define PA_HOOK_INSTR_RET 0xC3
-
-#pragma pack(1)
-typedef struct _struct_PaHookCode {
-	BYTE instrPush;
-	LPVOID pJumpAddr;
-	BYTE instrRet;
-} PaHookCode_t, *PaHookCode_p;
-#pragma pack()
+#include <NTDLL.h>
 
 static HANDLE s_GetCodeHeap(void);
 
@@ -52,6 +40,7 @@ LPVOID PaHookSimpleFunction(LPVOID pFunction, SIZE_T nSize, LPVOID pHook) {
 BOOL PaReplaceFunction(LPVOID pFunction, LPVOID pNewFunction) {
 	PaHookCode_p pHookCode;
 	DWORD nOldProt;
+	NTSTATUS status;
 
 	// put hook at original location
 	if (!VirtualProtect(pFunction, sizeof(PaHookCode_t), PAGE_EXECUTE_READWRITE, &nOldProt))
@@ -62,7 +51,35 @@ BOOL PaReplaceFunction(LPVOID pFunction, LPVOID pNewFunction) {
 	pHookCode->pJumpAddr = pNewFunction;
 	pHookCode->instrRet = PA_HOOK_INSTR_RET;
 
-	if (!FlushInstructionCache(GetCurrentProcess(), pHookCode, sizeof(PaHookCode_t)))
+	status = NtFlushInstructionCache(GetCurrentProcess(), pHookCode, sizeof(PaHookCode_t));
+	if (status != 0) {
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+BOOL PaReplaceFunctionEx(HANDLE hProcess, EXTERNAL_PTR pFunction, EXTERNAL_PTR pNewFunction, OUT OPTIONAL LPVOID pRemovedCodeBuf) {
+	DWORD nOldProt, nBytesRW;
+	PaHookCode_t hook;
+
+	if (!VirtualProtectEx(hProcess, pFunction, PA_REPLACEFUNC_CODESIZE, PAGE_EXECUTE_READWRITE, &nOldProt))
+		return FALSE;
+
+	if (pRemovedCodeBuf != NULL) {
+		if (!ReadProcessMemory(hProcess, pFunction, pRemovedCodeBuf, PA_REPLACEFUNC_CODESIZE, &nBytesRW))
+			return FALSE;
+	}
+
+	hook.instrPush = PA_HOOK_INSTR_PUSH;
+	hook.pJumpAddr = pNewFunction;
+	hook.instrRet = PA_HOOK_INSTR_RET;
+
+	if (!WriteProcessMemory(hProcess, pFunction, &hook, PA_REPLACEFUNC_CODESIZE, &nBytesRW))
+		return FALSE;
+
+	if (!FlushInstructionCache(hProcess, pFunction, PA_REPLACEFUNC_CODESIZE))
 		return FALSE;
 
 	return TRUE;

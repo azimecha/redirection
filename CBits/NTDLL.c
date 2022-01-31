@@ -46,6 +46,8 @@ CB_NTDLL_DEFINE(NtMapViewOfSection, (HANDLE a, HANDLE b, PVOID* c, ULONG_PTR d, 
 CB_NTDLL_DEFINE(NtSuspendProcess, (HANDLE a), (a));
 CB_NTDLL_DEFINE(NtResumeProcess, (HANDLE a), (a));
 CB_NTDLL_DEFINE(NtQueryInformationProcess, (HANDLE a, PROCESSINFOCLASS b, PVOID c, ULONG d, PULONG e), (a, b, c, d, e));
+CB_NTDLL_DEFINE(NtFlushInstructionCache, (HANDLE a, PVOID b, ULONG c), (a, b, c));
+CB_NTDLL_DEFINE(NtProtectVirtualMemory, (HANDLE a, PVOID* b, PULONG c, ULONG d, PULONG e), (a, b, c, d, e));
 
 CB_NTDLL_DEFINE(RtlAnsiStringToUnicodeString, (PUNICODE_STRING a, PCANSI_STRING b, BOOLEAN c), (a, b, c));
 CB_NTDLL_DEFINE(RtlUnicodeStringToAnsiString, (PANSI_STRING a, PCUNICODE_STRING b, BOOLEAN c), (a, b, c));
@@ -155,4 +157,13 @@ LPVOID __stdcall CbGetNTDLLBaseAddress(void) {
 	}
 
 	return CbNTDLLBaseAddress;
+}
+
+DbgPrint_t __stdcall CbGetDebugPrintFunction(void) {
+	static DbgPrint_t procDbgPrint = NULL;
+
+	if (procDbgPrint == NULL)
+		procDbgPrint = CbGetNTDLLFunction("DbgPrint");
+
+	return procDbgPrint;
 }

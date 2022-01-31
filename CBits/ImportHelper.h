@@ -62,6 +62,7 @@ struct _LDR_DATA_TABLE_ENTRY_FULL* CbGetLoadedImageByIndex(unsigned nIndex);
 struct _LDR_DATA_TABLE_ENTRY_FULL* CbGetLoadedImageByName(LPCSTR pcszModuleName);
 
 LPVOID CbGetSymbolAddress(LPVOID pImageBase, LPCSTR pcszSymbolName);
+DWORD CbGetSymbolAddressEx(LPVOID pImageBase, LPCSTR pcszSymbolName, WORD nOrdinal, OUT LPVOID* ppSymbol);
 LPSTR CbNormalizeModuleName(LPSTR pszName);
 
 #endif

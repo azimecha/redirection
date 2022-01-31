@@ -5,6 +5,22 @@
 
 #include "ImportHelper.h"
 
+#ifndef STATUS_INVALID_PARAMETER_1
+#define STATUS_INVALID_PARAMETER_1 0xC00000EF
+#endif
+
+#ifndef STATUS_INVALID_PARAMETER_2
+#define STATUS_INVALID_PARAMETER_2 0xC00000F0
+#endif
+
+#ifndef STATUS_INVALID_PARAMETER_3
+#define STATUS_INVALID_PARAMETER_3 0xC00000F1
+#endif
+
+#ifndef STATUS_INVALID_PARAMETER_4
+#define STATUS_INVALID_PARAMETER_4 0xC00000F2
+#endif
+
 // Define CB_NTDLL_NO_TYPES to prevent any types from being declared that could conflict with ones in Windows headers
 #ifndef CB_NTDLL_NO_TYPES
 
@@ -331,8 +347,15 @@ typedef struct _PROCESS_BASIC_INFORMATION {
 	ULONG_PTR InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION;
 
-typedef NTSTATUS (__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, 
+typedef NTSTATUS(__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize,
 	PULONG pnResultSize);
+
+typedef NTSTATUS(__stdcall* NtCreateFile_t)(PHANDLE phFile, ACCESS_MASK access, POBJECT_ATTRIBUTES pAttrs, PIO_STATUS_BLOCK piosb,
+	PLARGE_INTEGER pliAllocSize, ULONG attribs, ULONG nShare, ULONG nCreateDisposition, ULONG nCreateOption, PVOID pEABuffer,
+	ULONG nEALength);
+
+typedef NTSTATUS(__stdcall* LdrGetProcedureAddress_t)(HMODULE hModule, OPTIONAL PANSI_STRING pasFuncName, OPTIONAL WORD nOrdinal,
+	OUT PVOID* ppAddressOUT);
 
 #endif // CB_NTDLL_NO_TYPES
 
@@ -360,6 +383,8 @@ typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
 	};
 } LDR_DATA_TABLE_ENTRY_FULL, * PLDR_DATA_TABLE_ENTRY_FULL;
 
+typedef NTSTATUS(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
+
 // Define CB_NTDLL_NO_TYPES to prevent any functions from being declared that could conflict with ones in Windows headers
 #ifndef CB_NTDLL_NO_FUNCS
 
@@ -376,16 +401,21 @@ NTSTATUS __stdcall NtMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* p
 NTSTATUS __stdcall NtSuspendProcess(HANDLE hProcess);
 NTSTATUS __stdcall NtResumeProcess(HANDLE hProcess);
 NTSTATUS __stdcall NtQueryInformationProcess(HANDLE hProcess, PROCESSINFOCLASS iclass, PVOID pBuffer, ULONG nBufSize, PULONG npResultSize);
+NTSTATUS __stdcall NtFlushInstructionCache(HANDLE hProcess, PVOID pBaseAddress, ULONG nBytes);
+NTSTATUS __stdcall NtProtectVirtualMemory(HANDLE hProcess, PVOID* ppBaseAddress, PULONG pnToProtect, ULONG nNewProt, PULONG pnOldProt);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
 ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status);
 void __stdcall RtlFreeUnicodeString(PUNICODE_STRING pusFromRtl);
 
+#define DbgPrint(f,...) do { if (CbGetDebugPrintFunction()) CbGetDebugPrintFunction()((f),__VA_ARGS__); } while (0)
+
 #endif // CB_NTDLL_NO_FUNCS
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
 LPVOID __stdcall CbGetNTDLLBaseAddress(void);
+DbgPrint_t __stdcall CbGetDebugPrintFunction(void);
 
 typedef enum _enum_CbSeverity {
 	CbSeverityNull,

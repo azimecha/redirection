@@ -4,3 +4,5 @@ NoRedirectImports
 ProcessEntryPoint=ProcessEntryPointThunk
 ProcessStartThunk
 NTDLLBaseAddress=CbNTDLLBaseAddress
+ProcessInitThunk
+InitThunkCode

@@ -3,6 +3,7 @@
 #include <ConfigReading.h>
 #include <RewriteImports.h>
 #include <InjectDLL.h>
+#include <HookFunction.h>
 
 //#define SHIMMER_WAIT_BEFORE_BEGIN
 #define SHIMMER_WAIT_BEFORE_RESUME
@@ -28,14 +29,15 @@ static PROCESS_INFORMATION s_infProcess = { 0 };
 static LPSTR s_pszCommandLine;
 static CONTEXT s_ctxThreadZero;
 static EXTERNAL_PTR s_xpPEB, s_xpImageBase, s_xpMorningBase, s_xpNewEntryPoint, s_xpOldEntryPointStorage, s_xpOldEntryPoint,
-	s_xpMorningNTDLLAddrVar;
+	s_xpMorningNTDLLAddrVar, s_xpLdrInitializeThunk, s_xpNewInitThunk, s_xpMorningOldInitThunkVar;
 static PEB s_peb;
 static SIZE_T s_nBytesRead;
 static char s_szINIPath[MAX_PATH + 1] = { 0 };
 static char s_szRedirDLLName[MAX_PATH + 1] = { 0 };
-static PaModuleHandle s_hMorningGlory;
+static PaModuleHandle s_hMorningGlory, s_hNTDLL;
 static PLDR_DATA_TABLE_ENTRY_FULL s_pentMyModule;
 static DWORD s_nOldNTDLLAddrVarProt;
+static BYTE s_arrOldInitThunkCode[PA_REPLACEFUNC_CODESIZE] = { 0xCC, 0x02 }; // default to INT3, 0x02 indicates written by shimmer
 
 void ENTRY_POINT(void) {
 	// the rest of the command line after our own executable's name gets passed on directly
@@ -154,6 +156,40 @@ void ENTRY_POINT(void) {
 		printf("Error 0x%08X setting context of thread %u\r\n", GetLastError(), s_infProcess.dwThreadId);
 		goto L_errorexit;
 	}
+
+	// replace LdrInitializeThunk
+	s_hNTDLL = PaModuleOpen("ntdll.dll", s_DisplayMessage, s_DisplayMessage, NULL);
+	if (s_hNTDLL == NULL) {
+		printf("Error 0x%08X opening NTDLL as module\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	s_xpNewInitThunk = PaGetRemoteSymbol(s_hMorningGlory, s_xpMorningBase, "ProcessInitThunk");
+	if (s_xpNewInitThunk == NULL) {
+		printf("Error 0x%08X determining remote address of ProcessInitThunk\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	s_xpLdrInitializeThunk = PaGetRemoteSymbol(s_hNTDLL, PaModuleGetBaseAddress(s_hNTDLL), "LdrInitializeThunk");
+	if (!PaReplaceFunctionEx(s_infProcess.hProcess, s_xpLdrInitializeThunk, s_xpNewInitThunk, s_arrOldInitThunkCode)) {
+		printf("Error 0x%08X replacing LdrInitializeThunk at 0x%08X with new initialization thunk at 0x%08X\r\n", GetLastError(),
+			(UINT_PTR)s_xpLdrInitializeThunk, (UINT_PTR)s_xpNewInitThunk);
+		goto L_errorexit;
+	}
+
+	// save old init thunk code
+	s_xpMorningOldInitThunkVar = PaGetRemoteSymbol(s_hMorningGlory, s_xpMorningBase, "InitThunkCode");
+	if (s_xpMorningOldInitThunkVar == NULL) {
+		printf("Error 0x%08X determining remote address of InitThunkCode\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	if (!WriteProcessMemory(s_infProcess.hProcess, s_xpMorningOldInitThunkVar, s_arrOldInitThunkCode, PA_REPLACEFUNC_CODESIZE, &s_nBytesRead)) {
+		printf("Error 0x%08X writing old initialization thunk code (%u bytes) to remote address 0x%08X\r\n", GetLastError(),
+			PA_REPLACEFUNC_CODESIZE, (UINT_PTR)s_xpMorningOldInitThunkVar);
+		goto L_errorexit;
+	}
+
 
 #ifdef SHIMMER_WAIT_BEFORE_RESUME
 	printf("Press any key to allow process to run.\r\n");
