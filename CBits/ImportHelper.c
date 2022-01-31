@@ -27,11 +27,11 @@ PLDR_DATA_TABLE_ENTRY_FULL CbGetLoadedImageByIndex(unsigned nIndex) {
 
 PLDR_DATA_TABLE_ENTRY_FULL CbGetLoadedImageByName(LPCSTR pcszModuleName) {
 	char szDesiredModuleName[MAX_PATH + 1];
-	LPSTR pszDesiredModuleName;
+	LPSTR pszDesiredModuleName, pszCurModuleName;
 	PPEB_LDR_DATA_FULL pdataLoader;
-	PLDR_DATA_TABLE_ENTRY_FULL pentCur;
-	ANSI_STRING asCurModuleName;
-	char szCurModuleName[MAX_PATH + 1];
+	PLDR_DATA_TABLE_ENTRY_FULL pentCur, pentFirst;
+	ANSI_STRING asCurModuleFullName;
+	char szCurModuleFullName[MAX_PATH + 1];
 	NTSTATUS status;
 
 	if (strlen(pcszModuleName) >= sizeof(szDesiredModuleName)) {
@@ -43,18 +43,22 @@ PLDR_DATA_TABLE_ENTRY_FULL CbGetLoadedImageByName(LPCSTR pcszModuleName) {
 	pszDesiredModuleName = CbNormalizeModuleName(szDesiredModuleName);
 
 	pdataLoader = (PPEB_LDR_DATA_FULL)(CbGetPEB()->Ldr);
+	pentFirst = &pdataLoader->InLoadOrderModuleList;
 	pentCur = CONTAINING_RECORD(pdataLoader->InLoadOrderModuleList.Flink, LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks);
 
-	asCurModuleName.Buffer = szCurModuleName;
-	asCurModuleName.Length = 0;
-	asCurModuleName.MaximumLength = sizeof(szCurModuleName) - 1;
+	asCurModuleFullName.Buffer = szCurModuleFullName;
+	asCurModuleFullName.Length = 0;
+	asCurModuleFullName.MaximumLength = sizeof(szCurModuleFullName) - 1;
 
-	while (pentCur != NULL) {
-		status = RtlUnicodeStringToAnsiString(&asCurModuleName, &pentCur->FullDllName, FALSE);
-		if (status == 0) {
-			szCurModuleName[asCurModuleName.Length] = 0;
-			if (!stricmp(szCurModuleName, pcszModuleName))
-				return pentCur;
+	while ((pentCur != NULL) && (pentCur != pentFirst)) {
+		if (pentCur->FullDllName.Buffer != NULL) {
+			status = RtlUnicodeStringToAnsiString(&asCurModuleFullName, &pentCur->FullDllName, FALSE);
+			if (status == 0) {
+				szCurModuleFullName[asCurModuleFullName.Length] = 0;
+				pszCurModuleName = CbNormalizeModuleName(szCurModuleFullName);
+				if (!stricmp(pszCurModuleName, pszDesiredModuleName))
+					return pentCur;
+			}
 		}
 
 		pentCur = CONTAINING_RECORD(pentCur->InLoadOrderLinks.Flink, LDR_DATA_TABLE_ENTRY_FULL, InLoadOrderLinks);

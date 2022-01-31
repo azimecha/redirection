@@ -4,21 +4,45 @@
 #include <NTDLL.h>
 #include <processthreadsapi.h>
 
+#ifndef DECLSPEC_NAKED
+#define DECLSPEC_NAKED __declspec(naked)
+#endif
+
 #define MORNINGGLORY_ERROR_ON_WRONGFUL_LOAD
 
-typedef void(__stdcall* BaseProcessStartThunk_t)(LPVOID pStartAddr, LPVOID pParam);
 typedef HMODULE(__stdcall* LoadLibraryA_t)(LPCSTR pcszLibrary);
 
+DECLSPEC_NORETURN void __stdcall ProcessEntryPointThunk(void);
+DECLSPEC_NORETURN static void __stdcall s_CallOriginalThunk(LPVOID pStartAddr, LPVOID pParam);
+DECLSPEC_NORETURN void __stdcall ProcessEntryPoint(LPVOID pStartAddr, LPVOID pParam);
 DECLSPEC_NORETURN static void s_Die(void);
 
 // shimmer will set this value to the original entry point
-BaseProcessStartThunk_t ProcessStartThunk = NULL;
+LPVOID ProcessStartThunk = NULL;
 
 // tells ways.dll not to mess with us
 int NoRedirectImports = 1;
 
 // this will be called instead
-void __stdcall ProcessEntryPoint(LPVOID pStartAddr, LPVOID pParam) {
+DECLSPEC_NORETURN DECLSPEC_NAKED void __stdcall ProcessEntryPointThunk(void) {
+    __asm {
+        PUSH EBX
+        PUSH EAX
+        CALL ProcessEntryPoint
+    }
+}
+
+// to call the original entry point, use this function
+DECLSPEC_NORETURN DECLSPEC_NAKED static void __stdcall s_CallOriginalThunk(LPVOID pStartAddr, LPVOID pParam) {
+    __asm {
+        MOV EAX, [ESP + 4]
+        MOV EBX, [ESP + 8]
+        CALL ProcessStartThunk
+    }
+}
+
+// once ProcessEntryPointThunk puts the values onto the stack, this function gets called
+DECLSPEC_NORETURN void __stdcall ProcessEntryPoint(LPVOID pStartAddr, LPVOID pParam) {
     PLDR_DATA_TABLE_ENTRY_FULL pentKernel32;
     LoadLibraryA_t procLoadLibrary;
     HMODULE hWaysModule;
@@ -54,7 +78,7 @@ void __stdcall ProcessEntryPoint(LPVOID pStartAddr, LPVOID pParam) {
 
     //dprintf("[ProcessEntryPoint] Calling ProcessStartThunk at 0x%08X\r\n", ProcessStartThunk);
 
-    ProcessStartThunk(pStartAddr, pParam);
+    s_CallOriginalThunk(pStartAddr, pParam);
 
     CbDisplayMessageW(L"Warning", L"ProcessStartThunk returned - this should not happen.", CbSeverityWarning);
     s_Die();

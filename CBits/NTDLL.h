@@ -5,6 +5,9 @@
 
 #include "ImportHelper.h"
 
+// Define CB_NTDLL_NO_TYPES to prevent any types from being declared that could conflict with ones in Windows headers
+#ifndef CB_NTDLL_NO_TYPES
+
 #define _X86_
 #include <minwindef.h>
 
@@ -258,30 +261,6 @@ typedef struct _PEB_LDR_DATA_FULL {
 
 C_ASSERT(FIELD_OFFSET(PEB_LDR_DATA_FULL, InLoadOrderModuleList) == 0x0C);
 
-typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
-	LIST_ENTRY InLoadOrderLinks;
-	LIST_ENTRY InMemoryOrderLinks;
-	union {
-		LIST_ENTRY InInitializationOrderLinks;
-		LIST_ENTRY InProgressLinks;
-	};
-	PVOID DllBase;
-	PVOID EntryPoint;
-	ULONG SizeOfImage;
-	UNICODE_STRING FullDllName;
-	UNICODE_STRING BaseDllName;
-	ULONG Flags;
-	USHORT LoadCount;
-	USHORT TlsIndex;
-	union {
-		LIST_ENTRY HashLinks;
-		struct {
-			PVOID SectionPointer;
-			ULONG CheckSum;
-		};
-	};
-} LDR_DATA_TABLE_ENTRY_FULL, * PLDR_DATA_TABLE_ENTRY_FULL;
-
 // https://www.nirsoft.net/kernel_struct/vista/SECTION_IMAGE_INFORMATION.html
 typedef struct _SECTION_IMAGE_INFORMATION {
 	PVOID TransferAddress;
@@ -355,6 +334,35 @@ typedef struct _PROCESS_BASIC_INFORMATION {
 typedef NTSTATUS (__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, 
 	PULONG pnResultSize);
 
+#endif // CB_NTDLL_NO_TYPES
+
+typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
+	LIST_ENTRY InLoadOrderLinks;
+	LIST_ENTRY InMemoryOrderLinks;
+	union {
+		LIST_ENTRY InInitializationOrderLinks;
+		LIST_ENTRY InProgressLinks;
+	};
+	PVOID DllBase;
+	PVOID EntryPoint;
+	ULONG SizeOfImage;
+	UNICODE_STRING FullDllName;
+	UNICODE_STRING BaseDllName;
+	ULONG Flags;
+	USHORT LoadCount;
+	USHORT TlsIndex;
+	union {
+		LIST_ENTRY HashLinks;
+		struct {
+			PVOID SectionPointer;
+			ULONG CheckSum;
+		};
+	};
+} LDR_DATA_TABLE_ENTRY_FULL, * PLDR_DATA_TABLE_ENTRY_FULL;
+
+// Define CB_NTDLL_NO_TYPES to prevent any functions from being declared that could conflict with ones in Windows headers
+#ifndef CB_NTDLL_NO_FUNCS
+
 NTSTATUS __stdcall NtQueryInformationFile(HANDLE hFile, PIO_STATUS_BLOCK piosb, PVOID pInfoBuffer, ULONG nBufSize, FILE_INFORMATION_CLASS iclass);
 NTSTATUS __stdcall NtQuerySection(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize, PULONG pnResultSize);
 NTSTATUS __stdcall NtUnmapViewOfSection(HANDLE hProcess, PVOID pBaseAddress);
@@ -374,7 +382,10 @@ NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, 
 ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status);
 void __stdcall RtlFreeUnicodeString(PUNICODE_STRING pusFromRtl);
 
+#endif // CB_NTDLL_NO_FUNCS
+
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
+LPVOID __stdcall CbGetNTDLLBaseAddress(void);
 
 typedef enum _enum_CbSeverity {
 	CbSeverityNull,
@@ -389,5 +400,9 @@ typedef enum _enum_CbSeverity {
 NTSTATUS CbDisplayMessageUni(PUNICODE_STRING pusTitle, PUNICODE_STRING pusMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayMessageA(LPCSTR pcszTitle, LPCSTR pcszMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayMessageW(LPCWSTR pcwzTitle, LPCWSTR pcwzMessage, CbSeverity_t sev);
+
+// set this before calling NTDLL funcs to force a specific address
+// useful if running in an environment where the loaded modules list is uninitialized
+extern LPVOID CbNTDLLBaseAddress;
 
 #endif

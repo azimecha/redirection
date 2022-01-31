@@ -130,6 +130,9 @@ void PaModuleClose(PaModuleHandle hModule) {
 	}
 }
 
+#pragma warning(push)
+#pragma warning(disable:4101)
+
 EXTERNAL_PTR PaInjectWithoutLoad(PaModuleHandle hModule, HANDLE hTargetProcess, BOOL bRegisterAsLoaded) {
 	DWORD nError = 0;
 	NTSTATUS status = 0;
@@ -176,6 +179,7 @@ EXTERNAL_PTR PaInjectWithoutLoad(PaModuleHandle hModule, HANDLE hTargetProcess, 
 		goto L_exit;
 	}
 
+#if 0 // UNTESTED
 	if (bRegisterAsLoaded) {
 		// basic loader data table entry setup
 		phdrNT = PaModuleGetNTHeaders(hModule);
@@ -308,6 +312,7 @@ EXTERNAL_PTR PaInjectWithoutLoad(PaModuleHandle hModule, HANDLE hTargetProcess, 
 			goto L_exit;
 		}
 	}
+#endif
 
 L_exit:
 	if (pentInLoadOrder != NULL) PaFreeListItems(pentInLoadOrder);
@@ -319,6 +324,8 @@ L_exit:
 	SetLastError(nError);
 	return (!bRegisterAsLoaded || bDidRegister) ? pForeignAddress : NULL;
 }
+
+#pragma warning(pop)
 
 static DWORD s_InsertListEntry(PaModuleHandle hModule, HANDLE hProcess, PLIST_ENTRY pentThisItemLocal, EXTERNAL_PTR xpPrevListItem,
 	EXTERNAL_PTR xpThisListItem, EXTERNAL_PTR xpNextListItem)

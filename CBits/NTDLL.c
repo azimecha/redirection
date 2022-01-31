@@ -29,14 +29,10 @@
 		return s_func ## n a2;												\
 	}
 
+LPVOID CbNTDLLBaseAddress = NULL;
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName) {
-	PLDR_DATA_TABLE_ENTRY_FULL pentNTDLL;
-
-	pentNTDLL = CbGetLoadedImageByIndex(1);
-	if (pentNTDLL == NULL) return NULL;
-
-	return CbGetSymbolAddress(pentNTDLL->DllBase, pcszFuncName);
+	return CbGetSymbolAddress(CbGetNTDLLBaseAddress(), pcszFuncName);
 }
 
 CB_NTDLL_DEFINE(NtQueryInformationFile, (HANDLE a, PIO_STATUS_BLOCK b, PVOID c, ULONG d, FILE_INFORMATION_CLASS e), (a, b, c, d, e));
@@ -144,4 +140,19 @@ NTSTATUS CbDisplayMessageW(LPCWSTR pcwzTitle, LPCWSTR pcwzMessage, CbSeverity_t 
 	usMessage.MaximumLength = usMessage.Length;
 
 	return CbDisplayMessageUni(&usTitle, &usMessage, sev);
+}
+
+LPVOID __stdcall CbGetNTDLLBaseAddress(void) {
+	PLDR_DATA_TABLE_ENTRY_FULL pentNTDLL;
+
+	if (CbNTDLLBaseAddress == NULL) {
+		// cannot use CbGetLoadedImageByString because it calls NT funcs
+		pentNTDLL = CbGetLoadedImageByIndex(1);
+		if (pentNTDLL == NULL)
+			return NULL;
+
+		CbNTDLLBaseAddress = pentNTDLL->DllBase;
+	}
+
+	return CbNTDLLBaseAddress;
 }

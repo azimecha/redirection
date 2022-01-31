@@ -1,5 +1,6 @@
 LIBRARY "morning.dll"
 EXPORTS
 NoRedirectImports
-ProcessEntryPoint
+ProcessEntryPoint=ProcessEntryPointThunk
 ProcessStartThunk
+NTDLLBaseAddress=CbNTDLLBaseAddress
