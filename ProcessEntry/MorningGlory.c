@@ -15,6 +15,7 @@
 
 typedef HMODULE(__stdcall* LoadLibraryA_t)(LPCSTR pcszLibrary);
 typedef void(__stdcall* LdrInitializeThunk_t)(LPVOID p1, LPVOID p2, LPVOID p3);
+typedef NTSTATUS(__stdcall* BaseProcessInitPostImport_t)(void);
 
 static NTSTATUS __stdcall s_GetProcedureAddress(HMODULE hModule, OPTIONAL PANSI_STRING pasFuncName, OPTIONAL WORD nOrdinal,
     OUT PVOID* ppAddressOUT);
@@ -142,10 +143,43 @@ static NTSTATUS __stdcall s_GetProcedureAddress(HMODULE hModule, OPTIONAL PANSI_
 }
 
 static void s_OnKernel32Loaded(PLDR_DATA_TABLE_ENTRY_FULL pentKernel32) {
+    BaseProcessInitPostImport_t procBaseProcessInitPostImport;
     LoadLibraryA_t procLoadLibrary;
     HMODULE hWaysModule;
+    NTSTATUS status;
+    PVOID pBase;
+    ULONG nBytes, nOldProt;
 
-    CbDisplayMessageW(L"Info", L"Kernel32 has been loaded, loading Ways.\r\n", CbSeverityInfo);
+    CbDisplayMessageW(L"Info", L"Kernel32 has been loaded.\r\n", CbSeverityInfo);
+
+    procBaseProcessInitPostImport = CbGetSymbolAddress(pentKernel32->DllBase, "BaseProcessInitPostImport");
+    if (procBaseProcessInitPostImport == NULL)
+        DbgPrint("[OnKernel32Loaded] BaseProcessInitPostImport not found, assuming not necessary.\r\n");
+    else {
+        // call kernel32 init function
+        DbgPrint("[OnKernel32Loaded] Calling BaseProcessInitPostImport\r\n");
+        status = procBaseProcessInitPostImport();
+        DbgPrint("[OnKernel32Loaded] BaseProcessInitPostImport returned 0x%08X\r\n", status);
+        if (status != 0) {
+            CbDisplayMessageW(L"Error", L"BaseProcessInitPostImport failed.\r\n", CbSeverityError);
+            s_Die();
+        }
+
+        // prevent anyone else from doing so by replacing it with a single ret
+        pBase = procBaseProcessInitPostImport;
+        nBytes = 1;
+        status = NtProtectVirtualMemory(MG_CURRENT_PROCESS, &pBase, &nBytes, PAGE_EXECUTE_READWRITE, &nOldProt);
+        if (status == 0) {
+            *(BYTE*)procBaseProcessInitPostImport = PA_HOOK_INSTR_RET;
+            DbgPrint("[OnKernel32Loaded] BaseProcessInitPostImport replaced with RET\r\n");
+        } else {
+            CbDisplayMessageW(L"Warning",
+                L"Error changing memory protection.\r\nUnable to prevent BaseProcessInitPostImport from being called again.",
+                CbSeverityWarning);
+        }
+    }
+
+    CbDisplayMessageW(L"Info", L"Loading MagicWays.\r\n", CbSeverityInfo);
 
     procLoadLibrary = CbGetSymbolAddress(pentKernel32->DllBase, "LoadLibraryA");
     if (procLoadLibrary == NULL) {
@@ -158,6 +192,8 @@ static void s_OnKernel32Loaded(PLDR_DATA_TABLE_ENTRY_FULL pentKernel32) {
         CbDisplayMessageW(L"Error", L"Ways.dll could not be loaded.", CbSeverityError);
         s_Die();
     }
+
+    DbgPrint("[OnKernel32Loaded] Loaded MagicWays\r\n");
 }
 
 // this will be called instead of the function pointed to by ProcessStartThunk
