@@ -4,6 +4,7 @@
 #include <RewriteImports.h>
 #include <InjectDLL.h>
 #include <HookFunction.h>
+#include <PartialStdio.h>
 
 //#define SHIMMER_WAIT_BEFORE_BEGIN
 #define SHIMMER_WAIT_BEFORE_RESUME
@@ -29,15 +30,16 @@ static PROCESS_INFORMATION s_infProcess = { 0 };
 static LPSTR s_pszCommandLine;
 static CONTEXT s_ctxThreadZero;
 static EXTERNAL_PTR s_xpPEB, s_xpImageBase, s_xpMorningBase, s_xpNewEntryPoint, s_xpOldEntryPointStorage, s_xpOldEntryPoint,
-	s_xpMorningNTDLLAddrVar, s_xpLdrInitializeThunk, s_xpNewInitThunk, s_xpMorningOldInitThunkVar;
+	s_xpMorningNTDLLAddrVar, s_xpLdrInitializeThunk, s_xpNewInitThunk, s_xpMorningOldInitThunkVar, s_xpMorningMagicWaysPathVar;
 static PEB s_peb;
 static SIZE_T s_nBytesRead;
 static char s_szINIPath[MAX_PATH + 1] = { 0 };
 static char s_szRedirDLLName[MAX_PATH + 1] = { 0 };
-static PaModuleHandle s_hMorningGlory, s_hNTDLL;
+static PaModuleHandle s_hMorningGlory, s_hNTDLL, s_hMagicWays;
 static PLDR_DATA_TABLE_ENTRY_FULL s_pentMyModule;
 static DWORD s_nOldNTDLLAddrVarProt;
 static BYTE s_arrOldInitThunkCode[PA_REPLACEFUNC_CODESIZE] = { 0xCC, 0x02 }; // default to INT3, 0x02 indicates written by shimmer
+static WCHAR s_wzMagicWaysPath[MAX_PATH];
 
 void ENTRY_POINT(void) {
 	// the rest of the command line after our own executable's name gets passed on directly
@@ -125,6 +127,30 @@ void ENTRY_POINT(void) {
 	if (!WriteProcessMemory(s_infProcess.hProcess, s_xpMorningNTDLLAddrVar, &CbNTDLLBaseAddress, sizeof(CbNTDLLBaseAddress), &s_nBytesRead)) {
 		printf("Error 0x%08X writing NTDLL base address to remote variable of size %u at location 0x%08X\r\n", GetLastError(),
 			sizeof(CbNTDLLBaseAddress), (UINT_PTR)s_xpMorningNTDLLAddrVar);
+		goto L_errorexit;
+	}
+
+	// give it the path to ways.dll as well
+	s_hMagicWays = PaModuleOpen("ways.dll", s_DisplayMessage, s_DisplayMessage, NULL);
+	if (s_hMagicWays == NULL) {
+		printf("Error 0x%08X loading ways.dll\r\n", GetLastError());
+		goto L_errorexit;
+	}
+
+	s_xpMorningMagicWaysPathVar = PaGetRemoteSymbol(s_hMorningGlory, s_xpMorningBase, "MagicWaysPath");
+	printf("Remote: MagicWays path var at 0x%08X\r\n", (UINT_PTR)s_xpMorningMagicWaysPathVar);
+	printf("MagicWays DLL path is %s\r\n", PaModuleGetFilePath(s_hMagicWays));
+	
+	if (mbstowcs(s_wzMagicWaysPath, PaModuleGetFilePath(s_hMagicWays), ARRAYSIZE(s_wzMagicWaysPath)) == (size_t)(-1)) {
+		puts("MagicWays path is too long");
+		goto L_errorexit;
+	}
+
+	if (!WriteProcessMemory(s_infProcess.hProcess, s_xpMorningMagicWaysPathVar, s_wzMagicWaysPath, wcslen(s_wzMagicWaysPath) * sizeof(WCHAR),
+		&s_nBytesRead))
+	{
+		printf("Error 0x%08X writing MagicWays DLL path at 0x%08X to location 0x%08X in remote process", GetLastError(), (UINT_PTR)s_wzMagicWaysPath,
+			(UINT_PTR)s_xpMorningMagicWaysPathVar);
 		goto L_errorexit;
 	}
 

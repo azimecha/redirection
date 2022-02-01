@@ -219,6 +219,112 @@ typedef struct _PEB {
 	ULONG                         SessionId;
 } PEB, * PPEB;
 
+typedef struct _STRING {
+	WORD Length;
+	WORD MaximumLength;
+	CHAR* Buffer;
+} STRING, * PSTRING;
+
+typedef struct _RTL_DRIVE_LETTER_CURDIR {
+	WORD Flags;
+	WORD Length;
+	ULONG TimeStamp;
+	STRING DosPath;
+} RTL_DRIVE_LETTER_CURDIR, * PRTL_DRIVE_LETTER_CURDIR;
+
+typedef struct _RTL_USER_PROCESS_PARAMETERS {
+	ULONG                   MaximumLength;
+	ULONG                   Length;
+	ULONG                   Flags;
+	ULONG                   DebugFlags;
+	PVOID                   ConsoleHandle;
+	ULONG                   ConsoleFlags;
+	HANDLE                  StdInputHandle;
+	HANDLE                  StdOutputHandle;
+	HANDLE                  StdErrorHandle;
+	UNICODE_STRING          CurrentDirectoryPath;
+	HANDLE                  CurrentDirectoryHandle;
+	UNICODE_STRING          DllPath;
+	UNICODE_STRING          ImagePathName;
+	UNICODE_STRING          CommandLine;
+	PVOID                   Environment;
+	ULONG                   StartingPositionLeft;
+	ULONG                   StartingPositionTop;
+	ULONG                   Width;
+	ULONG                   Height;
+	ULONG                   CharWidth;
+	ULONG                   CharHeight;
+	ULONG                   ConsoleTextAttributes;
+	ULONG                   WindowFlags;
+	ULONG                   ShowWindowFlags;
+	UNICODE_STRING          WindowTitle;
+	UNICODE_STRING          DesktopName;
+	UNICODE_STRING          ShellInfo;
+	UNICODE_STRING          RuntimeData;
+	RTL_DRIVE_LETTER_CURDIR DLCurrentDirectory[0x20];
+} RTL_USER_PROCESS_PARAMETERS, * PRTL_USER_PROCESS_PARAMETERS;
+
+typedef PVOID* PPVOID;
+
+typedef struct _PEB_FULL {
+	BOOLEAN                 InheritedAddressSpace;
+	BOOLEAN                 ReadImageFileExecOptions;
+	BOOLEAN                 BeingDebugged;
+	BOOLEAN                 Spare;
+	HANDLE                  Mutant;
+	PVOID                   ImageBaseAddress;
+	PPEB_LDR_DATA           LoaderData;
+	PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
+	PVOID                   SubSystemData;
+	PVOID                   ProcessHeap;
+	PVOID                   FastPebLock;
+	PVOID					FastPebLockRoutine;
+	PVOID					FastPebUnlockRoutine;
+	ULONG                   EnvironmentUpdateCount;
+	PPVOID                  KernelCallbackTable;
+	PVOID                   EventLogSection;
+	PVOID                   EventLog;
+	PVOID					FreeList;
+	ULONG                   TlsExpansionCounter;
+	PVOID                   TlsBitmap;
+	ULONG                   TlsBitmapBits[0x2];
+	PVOID                   ReadOnlySharedMemoryBase;
+	PVOID                   ReadOnlySharedMemoryHeap;
+	PPVOID                  ReadOnlyStaticServerData;
+	PVOID                   AnsiCodePageData;
+	PVOID                   OemCodePageData;
+	PVOID                   UnicodeCaseTableData;
+	ULONG                   NumberOfProcessors;
+	ULONG                   NtGlobalFlag;
+	BYTE                    Spare2[0x4];
+	LARGE_INTEGER           CriticalSectionTimeout;
+	ULONG                   HeapSegmentReserve;
+	ULONG                   HeapSegmentCommit;
+	ULONG                   HeapDeCommitTotalFreeThreshold;
+	ULONG                   HeapDeCommitFreeBlockThreshold;
+	ULONG                   NumberOfHeaps;
+	ULONG                   MaximumNumberOfHeaps;
+	PPVOID*					ProcessHeaps;
+	PVOID                   GdiSharedHandleTable;
+	PVOID                   ProcessStarterHelper;
+	PVOID                   GdiDCAttributeList;
+	PVOID                   LoaderLock;
+	ULONG                   OSMajorVersion;
+	ULONG                   OSMinorVersion;
+	ULONG                   OSBuildNumber;
+	ULONG                   OSPlatformId;
+	ULONG                   ImageSubSystem;
+	ULONG                   ImageSubSystemMajorVersion;
+	ULONG                   ImageSubSystemMinorVersion;
+	ULONG                   GdiHandleBuffer[0x22];
+	ULONG                   PostProcessInitRoutine;
+	ULONG                   TlsExpansionBitmap;
+	BYTE                    TlsExpansionBitmapBits[0x80];
+	ULONG                   SessionId;
+} PEB_FULL, * PPEB_FULL;
+
+C_ASSERT(sizeof(PEB_FULL) == sizeof(PEB));
+
 typedef struct _CLIENT_ID {
 	HANDLE UniqueProcess;
 	HANDLE UniqueThread;
@@ -357,6 +463,10 @@ typedef NTSTATUS(__stdcall* NtCreateFile_t)(PHANDLE phFile, ACCESS_MASK access, 
 typedef NTSTATUS(__stdcall* LdrGetProcedureAddress_t)(HMODULE hModule, OPTIONAL PANSI_STRING pasFuncName, OPTIONAL WORD nOrdinal,
 	OUT PVOID* ppAddressOUT);
 
+typedef ULONG(__stdcall* RtlGetCurrentDirectory_U_t)(ULONG nMaxLen, OUT PWSTR pwzBuffer);
+
+typedef BOOLEAN(__stdcall* RtlDoesFileExists_U_t)(PCWSTR pcwzPath); // [sic]
+
 #endif // CB_NTDLL_NO_TYPES
 
 typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
@@ -408,6 +518,10 @@ NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationStrin
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
 ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status);
 void __stdcall RtlFreeUnicodeString(PUNICODE_STRING pusFromRtl);
+ULONG __stdcall RtlGetCurrentDirectory_U(ULONG nMaxLen, OUT PWSTR pwzBuffer);
+BOOLEAN __stdcall RtlDoesFileExists_U(PCWSTR pcwzPath);
+
+NTSTATUS __stdcall LdrLoadDll(OPTIONAL PWCHAR pwzFullPath, ULONG flags, PUNICODE_STRING pusModuleName, OUT PHANDLE phModule);
 
 #define DbgPrint(f,...) do { if (CbGetDebugPrintFunction()) CbGetDebugPrintFunction()((f),__VA_ARGS__); } while (0)
 

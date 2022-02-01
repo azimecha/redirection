@@ -25,6 +25,12 @@ DECLSPEC_NORETURN static void __stdcall s_CallOriginalThunk(LPVOID pStartAddr, L
 DECLSPEC_NORETURN void __stdcall ProcessEntryPoint(LPVOID pStartAddr, LPVOID pParam);
 DECLSPEC_NORETURN static void s_Die(void);
 
+#if 0
+static BOOL s_MiniFindDLL(LPCWSTR pcwzName, OUT PUNICODE_STRING pusFullPath);
+static BOOL s_ConcatUniW(PUNICODE_STRING pusTarget, LPCWSTR pcwzToConcat);
+static void s_RemoveFilenameUni(PUNICODE_STRING pusTarget);
+#endif
+
 // shimmer will set this value to the original entry point
 LPVOID ProcessStartThunk = NULL;
 
@@ -34,6 +40,9 @@ int NoRedirectImports = 1;
 // shimmer will store the overwritten LdrInitializeThunk code here
 // default to INT3, 0x01 indicates not overwritten by shimmer
 BYTE InitThunkCode[PA_REPLACEFUNC_CODESIZE] = { 0xCC, 0x01 };
+
+// shimmer will store path to ways.dll here
+WCHAR MagicWaysPath[MAX_PATH + 1] = { 0 };
 
 // this will be called instead of LdrInitializeThunk
 DECLSPEC_NORETURN void __stdcall ProcessInitThunk(LPVOID p1, LPVOID p2, LPVOID p3) {
@@ -143,57 +152,26 @@ static NTSTATUS __stdcall s_GetProcedureAddress(HMODULE hModule, OPTIONAL PANSI_
 }
 
 static void s_OnKernel32Loaded(PLDR_DATA_TABLE_ENTRY_FULL pentKernel32) {
-    BaseProcessInitPostImport_t procBaseProcessInitPostImport;
-    LoadLibraryA_t procLoadLibrary;
     HMODULE hWaysModule;
     NTSTATUS status;
-    PVOID pBase;
-    ULONG nBytes, nOldProt;
+    UNICODE_STRING usWays;
 
     CbDisplayMessageW(L"Info", L"Kernel32 has been loaded.\r\n", CbSeverityInfo);
 
-    procBaseProcessInitPostImport = CbGetSymbolAddress(pentKernel32->DllBase, "BaseProcessInitPostImport");
-    if (procBaseProcessInitPostImport == NULL)
-        DbgPrint("[OnKernel32Loaded] BaseProcessInitPostImport not found, assuming not necessary.\r\n");
-    else {
-        // call kernel32 init function
-        DbgPrint("[OnKernel32Loaded] Calling BaseProcessInitPostImport\r\n");
-        status = procBaseProcessInitPostImport();
-        DbgPrint("[OnKernel32Loaded] BaseProcessInitPostImport returned 0x%08X\r\n", status);
-        if (status != 0) {
-            CbDisplayMessageW(L"Error", L"BaseProcessInitPostImport failed.\r\n", CbSeverityError);
-            s_Die();
-        }
+    usWays.Buffer = MagicWaysPath;
+    usWays.Length = (USHORT)(wcslen(MagicWaysPath) * sizeof(WCHAR));
+    usWays.MaximumLength = usWays.Length;
 
-        // prevent anyone else from doing so by replacing it with a single ret
-        pBase = procBaseProcessInitPostImport;
-        nBytes = 1;
-        status = NtProtectVirtualMemory(MG_CURRENT_PROCESS, &pBase, &nBytes, PAGE_EXECUTE_READWRITE, &nOldProt);
-        if (status == 0) {
-            *(BYTE*)procBaseProcessInitPostImport = PA_HOOK_INSTR_RET;
-            DbgPrint("[OnKernel32Loaded] BaseProcessInitPostImport replaced with RET\r\n");
-        } else {
-            CbDisplayMessageW(L"Warning",
-                L"Error changing memory protection.\r\nUnable to prevent BaseProcessInitPostImport from being called again.",
-                CbSeverityWarning);
-        }
-    }
+    DbgPrint("[OnKernel32Loaded] Loading ways.dll from %wZ\r\n", &usWays);
 
-    CbDisplayMessageW(L"Info", L"Loading MagicWays.\r\n", CbSeverityInfo);
-
-    procLoadLibrary = CbGetSymbolAddress(pentKernel32->DllBase, "LoadLibraryA");
-    if (procLoadLibrary == NULL) {
-        CbDisplayMessageW(L"Error", L"LoadLibraryA not found in kernel32.dll.", CbSeverityError);
+    status = LdrLoadDll(NULL, 0, &usWays, &hWaysModule);
+    if (status != 0) {
+        DbgPrint("[OnKernel32Loaded] LdrLoadDll on ways.dll returned 0x%08X\r\n", status);
+        CbDisplayMessageW(L"Error", L"Error loading MagicWays DLL\r\n", CbSeverityError);
         s_Die();
     }
 
-    hWaysModule = procLoadLibrary("ways.dll");
-    if (hWaysModule == NULL) {
-        CbDisplayMessageW(L"Error", L"Ways.dll could not be loaded.", CbSeverityError);
-        s_Die();
-    }
-
-    DbgPrint("[OnKernel32Loaded] Loaded MagicWays\r\n");
+    DbgPrint("[OnKernel32Loaded] Loaded ways.dll\r\n");
 }
 
 // this will be called instead of the function pointed to by ProcessStartThunk
@@ -255,7 +233,84 @@ BOOL WINAPI ENTRY_POINT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) 
 
 // if something goes totally wrong
 DECLSPEC_NORETURN static void s_Die(void) {
-    NtTerminateProcess(0, (NTSTATUS)-1);
     NtTerminateProcess((HANDLE)-1, (NTSTATUS)-1);
+    NtTerminateProcess(0, (NTSTATUS)-1);
     __asm INT 3;
 }
+
+#if 0
+
+// searches only current dir, app dir, and this dll's dir
+// will null terminate path
+static BOOL s_MiniFindDLL(LPCWSTR pcwzName, OUT PUNICODE_STRING pusFullPath) {
+    NTSTATUS status;
+    PVOID pImageBase;
+    BYTE arrSectionNameBuffer[MAX_PATH * 3];
+    ULONG nBytes;
+
+    DbgPrint("[MiniFindDLL] Searching for %ws\r\n", pcwzName);
+
+    // current dir
+    do {
+        pusFullPath->Length = RtlGetCurrentDirectory_U(pusFullPath->MaximumLength, pusFullPath->Buffer);
+        if (pusFullPath->Length == 0) break;
+
+        DbgPrint("[MiniFindDLL] Current dir: %wZ\r\n", pusFullPath);
+
+        if (pusFullPath->Buffer[pusFullPath->Length - 1] != '\\')
+            if (!s_ConcatUniW(pusFullPath, L"\\")) break;
+        if (!s_ConcatUniW(pusFullPath, pcwzName)) break;
+
+        if (RtlDoesFileExists_U(pusFullPath->Buffer))
+            goto L_found;
+
+        DbgPrint("[MiniFindDLL] Not found at %wZ\r\n", pusFullPath);
+    } while (0);
+
+
+    // process executable dir
+    do {
+        pImageBase = ((PPEB_FULL)CbGetTEB())->ImageBaseAddress;
+        DbgPrint("[MiniFindDLL] Process image base at 0x%08X\r\n", (UINT_PTR)pImageBase);
+        if (pImageBase == NULL) break;
+
+        status = NtQueryVirtualMemory(MG_CURRENT_PROCESS, pImageBase, MemorySectionName, arrSectionNameBuffer, sizeof(arrSectionNameBuffer),
+            &nBytes);
+        if (status != 0) {
+            DbgPrint("[MiniFindDLL] NtQueryVirtualMemory on 0x%08X returned 0x%08X\r\n", (UINT_PTR)pImageBase, status);
+            break;
+        }
+
+
+    } while (0);
+
+L_found:
+    DbgPrint("[MiniFindDLL] Found at: %wZ\r\n", pusFullPath);
+    return TRUE;
+}
+
+// returns false if string can't fit
+// will null terminate string
+static BOOL s_ConcatUniW(PUNICODE_STRING pusTarget, LPCWSTR pcwzToConcat) {
+    int nChars;
+
+    nChars = wcslen(pcwzToConcat);
+    if (nChars >= (pusTarget->MaximumLength - pusTarget->MaximumLength))
+        return FALSE;
+
+    memcpy(&pusTarget->Buffer[pusTarget->Length], pcwzToConcat, nChars * sizeof(WCHAR));
+    return TRUE;
+}
+
+// will null terminate string unless final character is a backslash
+static void s_RemoveFilenameUni(PUNICODE_STRING pusTarget) {
+    LPWSTR pwzCur;
+
+    for (pwzCur = pusTarget->Buffer + pusTarget->Length; pwzCur >= pusTarget->Buffer; pwzCur--) {
+        if (*pwzCur == '\\')
+            return;
+        *pwzCur = 0;
+    }
+}
+
+#endif

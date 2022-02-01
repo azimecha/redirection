@@ -51,6 +51,7 @@ CB_NTDLL_DEFINE(NtProtectVirtualMemory, (HANDLE a, PVOID* b, PULONG c, ULONG d, 
 
 CB_NTDLL_DEFINE(RtlAnsiStringToUnicodeString, (PUNICODE_STRING a, PCANSI_STRING b, BOOLEAN c), (a, b, c));
 CB_NTDLL_DEFINE(RtlUnicodeStringToAnsiString, (PANSI_STRING a, PCUNICODE_STRING b, BOOLEAN c), (a, b, c));
+CB_NTDLL_DEFINE(LdrLoadDll, (OPTIONAL PWCHAR a, ULONG b, PUNICODE_STRING c, OUT PHANDLE d), (a, b, c, d));
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -166,4 +167,23 @@ DbgPrint_t __stdcall CbGetDebugPrintFunction(void) {
 		procDbgPrint = CbGetNTDLLFunction("DbgPrint");
 
 	return procDbgPrint;
+}
+
+
+ULONG __stdcall RtlGetCurrentDirectory_U(ULONG nMaxLen, OUT PWSTR pwzBuffer) {
+	static RtlGetCurrentDirectory_U_t procRtlGetCurrentDirectory_U = NULL;
+
+	if (procRtlGetCurrentDirectory_U == NULL)
+		procRtlGetCurrentDirectory_U = CbGetNTDLLFunction("RtlGetCurrentDirectory_U");
+
+	return procRtlGetCurrentDirectory_U(nMaxLen, pwzBuffer);
+}
+
+BOOLEAN __stdcall RtlDoesFileExists_U(PCWSTR pcwzPath) {
+	static RtlDoesFileExists_U_t procRtlDoesFileExists_U = NULL;
+
+	if (procRtlDoesFileExists_U == NULL)
+		procRtlDoesFileExists_U = CbGetNTDLLFunction("RtlDoesFileExists_U");
+
+	return procRtlDoesFileExists_U(pcwzPath);
 }

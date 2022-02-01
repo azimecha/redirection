@@ -6,3 +6,4 @@ ProcessStartThunk
 NTDLLBaseAddress=CbNTDLLBaseAddress
 ProcessInitThunk
 InitThunkCode
+MagicWaysPath
