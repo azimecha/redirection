@@ -6,6 +6,8 @@
 #define _X86_
 #include <minwindef.h>
 
+typedef void* PaINIHandle;
+
 // check next to target (if not null) and next to self
 BOOL PaFindConfigFile(const char* pcszFileName, HANDLE hTargetProcess, char* pszPathBuffer, size_t nBufSize);
 
@@ -21,5 +23,11 @@ BOOL PaDoesFileExist(const char* pcszFilePath);
 
 // gets the preferred Win32 path for a volume (usually a drive letter)
 BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize);
+
+// read ini file using NT functions only, returns NTSTATUS, ASCII only, does not support all INI features
+DWORD PaINIOpen(LPCSTR pcszPath, OUT PaINIHandle* phINI);
+DWORD PaINIGetSection(PaINIHandle hINI, LPCSTR pcszSectionName, OUT LPSTR pszSectionBuf, size_t nBufSize);
+DWORD PaINIGetValue(PaINIHandle hINI, LPCSTR pcszSectionName, LPCSTR pcszValueName, OUT LPSTR pszValueBuf, size_t nBufSize);
+void PaINIClose(PaINIHandle hINI);
 
 #endif

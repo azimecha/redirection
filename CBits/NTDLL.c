@@ -29,6 +29,16 @@
 		return s_func ## n a2;												\
 	}
 
+#define CB_NTDLL_DEFINE_ALT(r,n,a1,a2)										\
+	static r (__stdcall* s_func ## n)a1;									\
+	r __stdcall n a1 {														\
+		if ((s_func ## n) == NULL)											\
+			s_func ## n = CbGetNTDLLFunction(#n);							\
+		if ((s_func ## n) == NULL)											\
+			return (r)0;													\
+		return s_func ## n a2;												\
+	}
+
 LPVOID CbNTDLLBaseAddress = NULL;
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName) {
@@ -48,6 +58,19 @@ CB_NTDLL_DEFINE(NtResumeProcess, (HANDLE a), (a));
 CB_NTDLL_DEFINE(NtQueryInformationProcess, (HANDLE a, PROCESSINFOCLASS b, PVOID c, ULONG d, PULONG e), (a, b, c, d, e));
 CB_NTDLL_DEFINE(NtFlushInstructionCache, (HANDLE a, PVOID b, ULONG c), (a, b, c));
 CB_NTDLL_DEFINE(NtProtectVirtualMemory, (HANDLE a, PVOID* b, PULONG c, ULONG d, PULONG e), (a, b, c, d, e));
+CB_NTDLL_DEFINE(NtCreateFile, (PHANDLE a, ACCESS_MASK b, POBJECT_ATTRIBUTES c, PIO_STATUS_BLOCK d, PLARGE_INTEGER e, LONG f, ULONG g,
+	ULONG h, ULONG i, PVOID j, ULONG k), (a, b, c, d, e, f, g, h, i, j, k));
+CB_NTDLL_DEFINE(NtCreateSection, (PHANDLE a, ULONG b, OPTIONAL POBJECT_ATTRIBUTES c, OPTIONAL PLARGE_INTEGER d, ULONG e, ULONG f, 
+	OPTIONAL HANDLE g), (a, b, c, d, e, f, g));
+CB_NTDLL_DEFINE(NtClose, (HANDLE a), (a));
+CB_NTDLL_DEFINE(NtAllocateVirtualMemory, (HANDLE a, OUT PVOID* b, ULONG c, OUT PULONG d, ULONG e, ULONG f), (a, b, c, d, e, f));
+CB_NTDLL_DEFINE(NtFreeVirtualMemory, (HANDLE a, PVOID* b, IN OUT PULONG c, ULONG d), (a, b, c, d));
+
+CB_NTDLL_DEFINE_ALT(PVOID, RtlCreateHeap, (ULONG a, OPTIONAL PVOID b, OPTIONAL SIZE_T c, OPTIONAL SIZE_T d, OPTIONAL PVOID e,
+	OPTIONAL PVOID f), (a, b, c, d, e, f));
+CB_NTDLL_DEFINE_ALT(PVOID, RtlAllocateHeap, (PVOID a, OPTIONAL ULONG b, SIZE_T c), (a, b, c));
+CB_NTDLL_DEFINE_ALT(BOOL, RtlFreeHeap, (PVOID a, OPTIONAL ULONG b, PVOID c), (a, b, c));
+CB_NTDLL_DEFINE_ALT(PVOID, RtlDestroyHeap, (PVOID a), (a));
 
 CB_NTDLL_DEFINE(RtlAnsiStringToUnicodeString, (PUNICODE_STRING a, PCANSI_STRING b, BOOLEAN c), (a, b, c));
 CB_NTDLL_DEFINE(RtlUnicodeStringToAnsiString, (PANSI_STRING a, PCUNICODE_STRING b, BOOLEAN c), (a, b, c));
@@ -160,15 +183,18 @@ LPVOID __stdcall CbGetNTDLLBaseAddress(void) {
 	return CbNTDLLBaseAddress;
 }
 
+static NTSTATUS __cdecl s_DummyDebugPrint(LPCSTR pcszFormat, ...) {
+	return STATUS_ENTRYPOINT_NOT_FOUND;
+}
+
 DbgPrint_t __stdcall CbGetDebugPrintFunction(void) {
 	static DbgPrint_t procDbgPrint = NULL;
 
 	if (procDbgPrint == NULL)
 		procDbgPrint = CbGetNTDLLFunction("DbgPrint");
 
-	return procDbgPrint;
+	return (procDbgPrint == NULL) ? s_DummyDebugPrint : procDbgPrint;
 }
-
 
 ULONG __stdcall RtlGetCurrentDirectory_U(ULONG nMaxLen, OUT PWSTR pwzBuffer) {
 	static RtlGetCurrentDirectory_U_t procRtlGetCurrentDirectory_U = NULL;
@@ -186,4 +212,61 @@ BOOLEAN __stdcall RtlDoesFileExists_U(PCWSTR pcwzPath) {
 		procRtlDoesFileExists_U = CbGetNTDLLFunction("RtlDoesFileExists_U");
 
 	return procRtlDoesFileExists_U(pcwzPath);
+}
+
+ULONG __stdcall RtlGetFullPathName_U(PCWSTR pcwzFileName, ULONG nBufSize, OUT PWSTR pwzBuffer, OPTIONAL OUT PWSTR pwzShortName) {
+	static RtlGetFullPathName_U_t procRtlGetFullPathName_U = NULL;
+
+	if (procRtlGetFullPathName_U == NULL)
+		procRtlGetFullPathName_U = CbGetNTDLLFunction("RtlGetFullPathName_U");
+
+	return procRtlGetFullPathName_U(pcwzFileName, nBufSize, pwzBuffer, pwzShortName);
+}
+
+static const WCHAR s_cwzPrefix[] = L"\\??\\";
+
+NTSTATUS CbCreateFileNT(LPCSTR pcszPath, ACCESS_MASK access, ULONG nShareMode, ULONG nCreateDisposition, ULONG options, OUT PHANDLE phFile) {
+	ANSI_STRING asOrigPath;
+	UNICODE_STRING usOrigPath, usFullPath;
+	NTSTATUS status;
+	WCHAR wzOrigPath[MAX_PATH + 1];
+	WCHAR wzFullPath[MAX_PATH * 2];
+	OBJECT_ATTRIBUTES attrs;
+	IO_STATUS_BLOCK iosb;
+
+	asOrigPath.Buffer = (PCHAR)pcszPath;
+	asOrigPath.Length = (USHORT)strlen(pcszPath);
+	asOrigPath.MaximumLength = asOrigPath.Length;
+
+	usOrigPath.Buffer = wzOrigPath;
+	usOrigPath.Length = 0;
+	usOrigPath.MaximumLength = sizeof(wzOrigPath);
+
+	status = RtlAnsiStringToUnicodeString(&usOrigPath, &asOrigPath, FALSE);
+	if (status != 0) return status;
+
+	RtlGetFullPathName_U(wzOrigPath, sizeof(wzFullPath), wzFullPath, NULL);
+
+	usFullPath.Buffer = wzFullPath;
+	usFullPath.Length = wcslen(wzFullPath) * sizeof(WCHAR);
+	usFullPath.MaximumLength = sizeof(wzFullPath);
+
+	if (wzFullPath[0] != '\\') {
+		if ((usFullPath.Length + sizeof(s_cwzPrefix)) > usFullPath.MaximumLength)
+			return STATUS_BUFFER_TOO_SMALL;
+		memmove((BYTE*)wzFullPath + sizeof(s_cwzPrefix) - sizeof(WCHAR), wzFullPath, usFullPath.Length + 1);
+		memcpy(wzFullPath, s_cwzPrefix, sizeof(s_cwzPrefix) - sizeof(WCHAR));
+		usFullPath.Length += sizeof(s_cwzPrefix) - sizeof(WCHAR);
+	}
+
+	DbgPrint("[CbCreateFileNT] Opening %wZ\r\n", &usFullPath);
+
+	RtlSecureZeroMemory(&attrs, sizeof(attrs));
+	attrs.Length = sizeof(attrs);
+	attrs.ObjectName = &usFullPath;
+	attrs.Attributes = OBJ_CASE_INSENSITIVE;
+	RtlSecureZeroMemory(&iosb, sizeof(iosb));
+
+	status = NtCreateFile(phFile, access, &attrs, &iosb, NULL, 0, nShareMode, nCreateDisposition, options, NULL, 0);
+	return status;
 }

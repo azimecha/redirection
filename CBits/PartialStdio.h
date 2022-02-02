@@ -16,6 +16,7 @@ static inline int toupper(int c) { return ((c >= 'a') && (c <= 'z')) ? (c - 'a' 
 
 // Case insensitive comparison
 int stricmp(const char* a, const char* b);
+int strnicmp(const char* a, const char* b, size_t n);
 
 // strcat that actually works how you'd expect: using a maximum total size
 // returns 1 if it was able to concat the whole thing, 0 otherwise

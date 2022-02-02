@@ -59,3 +59,17 @@ int CbStringStartsWithIA(const char* pcszCheck, const char* pcszCheckFor) {
 
 	return 1;
 }
+
+int CbTryAppendToBufferA(char** ppszBuffer, size_t* pnSize, const char* pcszToAppend) {
+	size_t nLength;
+
+	nLength = strlen(pcszToAppend);
+	if (nLength >= *pnSize)
+		return 0;
+
+	memcpy(*ppszBuffer, pcszToAppend, nLength + 1);
+
+	*ppszBuffer += nLength;
+	*pnSize -= nLength;
+	return 1;
+}

@@ -27,6 +27,53 @@
 #define _X86_
 #include <minwindef.h>
 
+#define FILE_DIRECTORY_FILE 0x00000001
+#define FILE_WRITE_THROUGH 0x00000002
+#define FILE_SEQUENTIAL_ONLY 0x00000004
+#define FILE_NO_INTERMEDIATE_BUFFERING 0x00000008
+#define FILE_SYNCHRONOUS_IO_ALERT 0x00000010
+#define FILE_SYNCHRONOUS_IO_NONALERT 0x00000020
+#define FILE_NON_DIRECTORY_FILE 0x00000040
+#define FILE_CREATE_TREE_CONNECTION 0x00000080
+#define FILE_COMPLETE_IF_OPLOCKED 0x00000100
+#define FILE_NO_EA_KNOWLEDGE 0x00000200
+#define FILE_OPEN_REMOTE_INSTANCE 0x00000400
+#define FILE_RANDOM_ACCESS 0x00000800
+#define FILE_DELETE_ON_CLOSE 0x00001000
+#define FILE_OPEN_BY_FILE_ID 0x00002000
+#define FILE_OPEN_FOR_BACKUP_INTENT 0x00004000
+#define FILE_NO_COMPRESSION 0x00008000
+#define FILE_RESERVE_OPFILTER 0x00100000
+#define FILE_OPEN_REPARSE_POINT 0x00200000
+#define FILE_OPEN_NO_RECALL 0x00400000
+#define FILE_OPEN_FOR_FREE_SPACE_QUERY 0x00800000
+#define FILE_COPY_STRUCTURED_STORAGE 0x00000041
+#define FILE_STRUCTURED_STORAGE 0x00000441
+
+#define FILE_SUPERSEDE 0x00000000
+#define FILE_OPEN 0x00000001
+#define FILE_CREATE 0x00000002
+#define FILE_OPEN_IF 0x00000003
+#define FILE_OVERWRITE 0x00000004
+#define FILE_OVERWRITE_IF 0x00000005
+#define FILE_MAXIMUM_DISPOSITION 0x00000005
+
+#define OBJ_CASE_INSENSITIVE 0x40
+
+#define CB_CURRENT_PROCESS (HANDLE)(-1)
+
+#ifndef STATUS_FILE_CORRUPT_ERROR
+#define STATUS_FILE_CORRUPT_ERROR 0xC0000102
+#endif
+
+#ifndef STATUS_NOT_FOUND
+#define STATUS_NOT_FOUND 0xC0000225
+#endif
+
+#ifndef STATUS_BUFFER_TOO_SMALL
+#define STATUS_BUFFER_TOO_SMALL 0xC0000023
+#endif
+
 typedef DWORD NTSTATUS;
 typedef ULONG ACCESS_MASK;
 
@@ -453,6 +500,17 @@ typedef struct _PROCESS_BASIC_INFORMATION {
 	ULONG_PTR InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION;
 
+typedef enum _RTL_PATH_TYPE {
+	RtlPathTypeUnknown,
+	RtlPathTypeUncAbsolute,
+	RtlPathTypeDriveAbsolute,
+	RtlPathTypeDriveRelative,
+	RtlPathTypeRooted,
+	RtlPathTypeRelative,
+	RtlPathTypeLocalDevice,
+	RtlPathTypeRootLocalDevice
+} RTL_PATH_TYPE;
+
 typedef NTSTATUS(__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize,
 	PULONG pnResultSize);
 
@@ -466,6 +524,8 @@ typedef NTSTATUS(__stdcall* LdrGetProcedureAddress_t)(HMODULE hModule, OPTIONAL 
 typedef ULONG(__stdcall* RtlGetCurrentDirectory_U_t)(ULONG nMaxLen, OUT PWSTR pwzBuffer);
 
 typedef BOOLEAN(__stdcall* RtlDoesFileExists_U_t)(PCWSTR pcwzPath); // [sic]
+
+typedef ULONG (__stdcall* RtlGetFullPathName_U_t)(PCWSTR pcwzFileName, ULONG nBufSize, OUT PWSTR pwzBuffer, OPTIONAL OUT PWSTR pwzShortName);
 
 #endif // CB_NTDLL_NO_TYPES
 
@@ -513,6 +573,13 @@ NTSTATUS __stdcall NtResumeProcess(HANDLE hProcess);
 NTSTATUS __stdcall NtQueryInformationProcess(HANDLE hProcess, PROCESSINFOCLASS iclass, PVOID pBuffer, ULONG nBufSize, PULONG npResultSize);
 NTSTATUS __stdcall NtFlushInstructionCache(HANDLE hProcess, PVOID pBaseAddress, ULONG nBytes);
 NTSTATUS __stdcall NtProtectVirtualMemory(HANDLE hProcess, PVOID* ppBaseAddress, PULONG pnToProtect, ULONG nNewProt, PULONG pnOldProt);
+NTSTATUS __stdcall NtCreateFile(PHANDLE phFile, ACCESS_MASK access, POBJECT_ATTRIBUTES pattr, PIO_STATUS_BLOCK piosb, PLARGE_INTEGER pliAllocSize,
+	ULONG attribs, ULONG nShareMode, ULONG nCreateDisp, ULONG nCreateOpts, PVOID pEABuffer, ULONG nEALength);
+NTSTATUS __stdcall NtCreateSection(PHANDLE phSection, ULONG nAccess, OPTIONAL POBJECT_ATTRIBUTES pattr, OPTIONAL PLARGE_INTEGER pliMaxSize,
+	ULONG attribPage, ULONG attribSection, OPTIONAL HANDLE hFile);
+NTSTATUS __stdcall NtClose(HANDLE hObject);
+NTSTATUS __stdcall NtAllocateVirtualMemory(HANDLE hProcess, IN OUT PVOID* ppBase, ULONG nZeroBits, IN OUT PULONG pnSize, ULONG nType, ULONG nProtection);
+NTSTATUS __stdcall NtFreeVirtualMemory(HANDLE hProcess, PVOID* ppBase, IN OUT PULONG pnSize, ULONG nFreeType);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
@@ -520,16 +587,25 @@ ULONG __stdcall RtlNtStatusToDosError(NTSTATUS status);
 void __stdcall RtlFreeUnicodeString(PUNICODE_STRING pusFromRtl);
 ULONG __stdcall RtlGetCurrentDirectory_U(ULONG nMaxLen, OUT PWSTR pwzBuffer);
 BOOLEAN __stdcall RtlDoesFileExists_U(PCWSTR pcwzPath);
+ULONG __stdcall RtlGetFullPathName_U(PCWSTR pcwzFileName, ULONG nBufSize, OUT PWSTR pwzBuffer, OPTIONAL OUT PWSTR pwzShortName);
+
+PVOID __stdcall RtlCreateHeap(ULONG flags, OPTIONAL PVOID pBase, OPTIONAL SIZE_T nReserveSize, OPTIONAL SIZE_T nCommitSize, OPTIONAL PVOID pLock, 
+	OPTIONAL PVOID pParams);
+PVOID __stdcall RtlAllocateHeap(PVOID pHeap, OPTIONAL ULONG flags, SIZE_T nSize);
+BOOL __stdcall RtlFreeHeap(PVOID pHeap, OPTIONAL ULONG flags, PVOID pBlock);
+PVOID __stdcall RtlDestroyHeap(PVOID pHeap);
 
 NTSTATUS __stdcall LdrLoadDll(OPTIONAL PWCHAR pwzFullPath, ULONG flags, PUNICODE_STRING pusModuleName, OUT PHANDLE phModule);
 
-#define DbgPrint(f,...) do { if (CbGetDebugPrintFunction()) CbGetDebugPrintFunction()((f),__VA_ARGS__); } while (0)
+#define DbgPrint(f,...) (CbGetDebugPrintFunction()((f),__VA_ARGS__))
 
 #endif // CB_NTDLL_NO_FUNCS
 
 LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
 LPVOID __stdcall CbGetNTDLLBaseAddress(void);
 DbgPrint_t __stdcall CbGetDebugPrintFunction(void);
+
+NTSTATUS CbCreateFileNT(LPCSTR pcszPath, ACCESS_MASK access, ULONG nShareMode, ULONG nCreateDisposition, ULONG options, OUT PHANDLE phFile);
 
 typedef enum _enum_CbSeverity {
 	CbSeverityNull,

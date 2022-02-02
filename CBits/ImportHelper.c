@@ -90,7 +90,6 @@ LPVOID CbGetSymbolAddress(LPVOID pImageBase, LPCSTR pcszSymbolName) {
 }
 
 NTSTATUS CbGetSymbolAddressEx(LPVOID pImageBase, LPCSTR pcszSymbolName, WORD nOrdinal, OUT LPVOID* ppSymbol) {
-	PIMAGE_DOS_HEADER phdrDOS;
 	PIMAGE_NT_HEADERS phdrNT;
 	PIMAGE_EXPORT_DIRECTORY pdirExports;
 	LPWORD pnOrdinals;
@@ -98,37 +97,36 @@ NTSTATUS CbGetSymbolAddressEx(LPVOID pImageBase, LPCSTR pcszSymbolName, WORD nOr
 	LPDWORD pnFunctionRVAs;
 	DWORD nName;
 	LPCSTR pcszCurName;
+	LPBYTE pbyBase;
+
+	pbyBase = pImageBase;
 
 	// find the library's NT headers
-	phdrDOS = (PIMAGE_DOS_HEADER)pImageBase;
-	if (phdrDOS->e_magic != MAKEWORD('M', 'Z'))
-		return STATUS_INVALID_IMAGE_FORMAT;
-
-	phdrNT = (PIMAGE_NT_HEADERS)((BYTE*)phdrDOS + phdrDOS->e_lfanew);
-	if (phdrNT->Signature != mmioFOURCC('P', 'E', 0, 0))
+	phdrNT = CbGetImageNTHeaders(pImageBase);
+	if (phdrNT == NULL)
 		return STATUS_INVALID_IMAGE_FORMAT;
 
 	// find the export directory
 	if (phdrNT->OptionalHeader.DataDirectory[0].Size == 0) goto L_notfound;
-	pdirExports = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)phdrDOS + phdrNT->OptionalHeader.DataDirectory[0].VirtualAddress);
+	pdirExports = (PIMAGE_EXPORT_DIRECTORY)(pbyBase + phdrNT->OptionalHeader.DataDirectory[0].VirtualAddress);
 	if (pdirExports == NULL) goto L_notfound;
 
-	pnOrdinals = (LPWORD)((BYTE*)phdrDOS + pdirExports->AddressOfNameOrdinals);
+	pnOrdinals = (LPWORD)(pbyBase + pdirExports->AddressOfNameOrdinals);
 	if (pnOrdinals == NULL) goto L_notfound;
 
-	pnNameRVAs = (LPDWORD)((BYTE*)phdrDOS + pdirExports->AddressOfNames);
+	pnNameRVAs = (LPDWORD)(pbyBase + pdirExports->AddressOfNames);
 	if (pnNameRVAs == NULL) goto L_notfound;
 
-	pnFunctionRVAs = (LPDWORD)((BYTE*)phdrDOS + pdirExports->AddressOfFunctions);
+	pnFunctionRVAs = (LPDWORD)(pbyBase + pdirExports->AddressOfFunctions);
 	if (pnNameRVAs == NULL) goto L_notfound;
 
 	// safer to prioritize name over ordinal if name was specified
 	if (pcszSymbolName) {
 		// find by name
 		for (nName = 0; nName < pdirExports->NumberOfNames; nName++) {
-			pcszCurName = (LPCSTR)((BYTE*)phdrDOS + pnNameRVAs[nName]);
+			pcszCurName = (LPCSTR)(pbyBase + pnNameRVAs[nName]);
 			if (stricmp(pcszCurName, pcszSymbolName) == 0) {
-				*ppSymbol = (BYTE*)phdrDOS + pnFunctionRVAs[pnOrdinals[nName]];
+				*ppSymbol = pbyBase + pnFunctionRVAs[pnOrdinals[nName]];
 				return 0;
 			}
 		}
@@ -142,7 +140,7 @@ NTSTATUS CbGetSymbolAddressEx(LPVOID pImageBase, LPCSTR pcszSymbolName, WORD nOr
 		if (nOrdinal > pdirExports->NumberOfFunctions)
 			goto L_notfound;
 
-		*ppSymbol = (BYTE*)phdrDOS + pnFunctionRVAs[nOrdinal];
+		*ppSymbol = pbyBase + pnFunctionRVAs[nOrdinal];
 		return 0;
 	}
 
@@ -158,4 +156,28 @@ LPSTR CbNormalizeModuleName(LPSTR pszName) {
 	CbPathRemoveExtensionA(pszName);
 	CbStringToLowerA(pszName);
 	return pszName;
+}
+
+PIMAGE_NT_HEADERS CbGetImageNTHeaders(LPVOID pImageBase) {
+	PIMAGE_DOS_HEADER phdrDOS;
+	PIMAGE_NT_HEADERS phdrNT;
+
+	phdrDOS = (PIMAGE_DOS_HEADER)pImageBase;
+	if (phdrDOS->e_magic != MAKEWORD('M', 'Z'))
+		return NULL;
+
+	phdrNT = (PIMAGE_NT_HEADERS)((BYTE*)phdrDOS + phdrDOS->e_lfanew);
+	if (phdrNT->Signature != mmioFOURCC('P', 'E', 0, 0))
+		return NULL;
+
+	return phdrNT;
+}
+
+LPVOID CbGetImageEntryPoint(LPVOID pImageBase) {
+	PIMAGE_NT_HEADERS phdrNT;
+
+	phdrNT = CbGetImageNTHeaders(pImageBase);
+	if (phdrNT == NULL) return NULL;
+
+	return (BYTE*)pImageBase + phdrNT->OptionalHeader.AddressOfEntryPoint;
 }

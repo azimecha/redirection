@@ -11,11 +11,12 @@
 #endif
 
 #define MG_ERROR_ON_WRONGFUL_LOAD
-#define MG_CURRENT_PROCESS (HANDLE)(-1)
+#define MG_CURRENT_PROCESS CB_CURRENT_PROCESS
 
 typedef HMODULE(__stdcall* LoadLibraryA_t)(LPCSTR pcszLibrary);
 typedef void(__stdcall* LdrInitializeThunk_t)(LPVOID p1, LPVOID p2, LPVOID p3);
 typedef NTSTATUS(__stdcall* BaseProcessInitPostImport_t)(void);
+typedef BOOL(__stdcall* DLLMain_t)(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved);
 
 static NTSTATUS __stdcall s_GetProcedureAddress(HMODULE hModule, OPTIONAL PANSI_STRING pasFuncName, OPTIONAL WORD nOrdinal,
     OUT PVOID* ppAddressOUT);
@@ -43,6 +44,9 @@ BYTE InitThunkCode[PA_REPLACEFUNC_CODESIZE] = { 0xCC, 0x01 };
 
 // shimmer will store path to ways.dll here
 WCHAR MagicWaysPath[MAX_PATH + 1] = { 0 };
+
+// shimmer will store path to config file here
+WCHAR ConfigFilePath[MAX_PATH + 1] = { 0 };
 
 // this will be called instead of LdrInitializeThunk
 DECLSPEC_NORETURN void __stdcall ProcessInitThunk(LPVOID p1, LPVOID p2, LPVOID p3) {
@@ -155,6 +159,8 @@ static void s_OnKernel32Loaded(PLDR_DATA_TABLE_ENTRY_FULL pentKernel32) {
     HMODULE hWaysModule;
     NTSTATUS status;
     UNICODE_STRING usWays;
+    DLLMain_t procWaysDLLMain;
+    LPSTR pszConfigFilePathBuffer;
 
     CbDisplayMessageW(L"Info", L"Kernel32 has been loaded.\r\n", CbSeverityInfo);
 
@@ -167,11 +173,40 @@ static void s_OnKernel32Loaded(PLDR_DATA_TABLE_ENTRY_FULL pentKernel32) {
     status = LdrLoadDll(NULL, 0, &usWays, &hWaysModule);
     if (status != 0) {
         DbgPrint("[OnKernel32Loaded] LdrLoadDll on ways.dll returned 0x%08X\r\n", status);
-        CbDisplayMessageW(L"Error", L"Error loading MagicWays DLL\r\n", CbSeverityError);
+        CbDisplayMessageW(L"Error", L"Error loading MagicWays DLL", CbSeverityError);
         s_Die();
     }
 
     DbgPrint("[OnKernel32Loaded] Loaded ways.dll\r\n");
+
+    pszConfigFilePathBuffer = CbGetSymbolAddress(hWaysModule, "ConfigFilePath");
+    if (pszConfigFilePathBuffer == NULL) {
+        CbDisplayMessageW(L"Error", L"Could not find config file path buffer in MagicWays DLL", CbSeverityError);
+        s_Die();
+    }
+
+    DbgPrint("[OnKernel32Loaded] ConfigFilePath buffer found in ways.dll at 0x%08X\r\n", pszConfigFilePathBuffer);
+    DbgPrint("[OnKernel32Loaded] Config file path: %s\r\n", ConfigFilePath);
+
+    memcpy(pszConfigFilePathBuffer, ConfigFilePath, MAX_PATH);
+
+    DbgPrint("[OnKernel32Loaded] Config file path copied to ways.dll\r\n");
+
+    procWaysDLLMain = CbGetImageEntryPoint(hWaysModule);
+    if (procWaysDLLMain == NULL) {
+        CbDisplayMessageW(L"Error", L"Could not find entry point of MagicWays DLL", CbSeverityError);
+        s_Die();
+    }
+
+    DbgPrint("[OnKernel32Loaded] Ways.dll entry point at 0x%08X\r\n", procWaysDLLMain);
+
+    if (!procWaysDLLMain(hWaysModule, DLL_PROCESS_ATTACH, NULL)) {
+        DbgPrint("[OnKernel32Loaded] Ways.dll main function returned FALSE! Last WinAPI error: 0x%08X\r\n", CbLastWinAPIError);
+        CbDisplayMessageW(L"Error", L"MagicWays DLL was unable to start", CbSeverityError);
+        s_Die();
+    }
+
+    DbgPrint("[OnKernel32Loaded] MagicWays loaded successfully\r\n");
 }
 
 // this will be called instead of the function pointed to by ProcessStartThunk

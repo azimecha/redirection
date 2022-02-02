@@ -30,7 +30,8 @@ static PROCESS_INFORMATION s_infProcess = { 0 };
 static LPSTR s_pszCommandLine;
 static CONTEXT s_ctxThreadZero;
 static EXTERNAL_PTR s_xpPEB, s_xpImageBase, s_xpMorningBase, s_xpNewEntryPoint, s_xpOldEntryPointStorage, s_xpOldEntryPoint,
-	s_xpMorningNTDLLAddrVar, s_xpLdrInitializeThunk, s_xpNewInitThunk, s_xpMorningOldInitThunkVar, s_xpMorningMagicWaysPathVar;
+	s_xpMorningNTDLLAddrVar, s_xpLdrInitializeThunk, s_xpNewInitThunk, s_xpMorningOldInitThunkVar, s_xpMorningMagicWaysPathVar,
+	s_xpMorningConfigPathVar;
 static PEB s_peb;
 static SIZE_T s_nBytesRead;
 static char s_szINIPath[MAX_PATH + 1] = { 0 };
@@ -130,7 +131,7 @@ void ENTRY_POINT(void) {
 		goto L_errorexit;
 	}
 
-	// give it the path to ways.dll as well
+	// give it the path to ways.dll as well ...
 	s_hMagicWays = PaModuleOpen("ways.dll", s_DisplayMessage, s_DisplayMessage, NULL);
 	if (s_hMagicWays == NULL) {
 		printf("Error 0x%08X loading ways.dll\r\n", GetLastError());
@@ -146,11 +147,21 @@ void ENTRY_POINT(void) {
 		goto L_errorexit;
 	}
 
-	if (!WriteProcessMemory(s_infProcess.hProcess, s_xpMorningMagicWaysPathVar, s_wzMagicWaysPath, wcslen(s_wzMagicWaysPath) * sizeof(WCHAR),
+	if (!WriteProcessMemory(s_infProcess.hProcess, s_xpMorningMagicWaysPathVar, s_wzMagicWaysPath, (wcslen(s_wzMagicWaysPath) + 1) * sizeof(WCHAR),
 		&s_nBytesRead))
 	{
 		printf("Error 0x%08X writing MagicWays DLL path at 0x%08X to location 0x%08X in remote process", GetLastError(), (UINT_PTR)s_wzMagicWaysPath,
 			(UINT_PTR)s_xpMorningMagicWaysPathVar);
+		goto L_errorexit;
+	}
+
+	// ... and the path to the config file
+	s_xpMorningConfigPathVar = PaGetRemoteSymbol(s_hMorningGlory, s_xpMorningBase, "ConfigFilePath");
+	printf("Remote: Config file path var at 0x%08X\r\n", (UINT_PTR)s_xpMorningConfigPathVar);
+	
+	if (!WriteProcessMemory(s_infProcess.hProcess, s_xpMorningConfigPathVar, s_szINIPath, strlen(s_szINIPath) + 1, &s_nBytesRead)) {
+		printf("Error 0x%08X writing config file path at 0x%08X to location 0x%08X in remote process", GetLastError(), (UINT_PTR)s_szINIPath,
+			(UINT_PTR)s_xpMorningConfigPathVar);
 		goto L_errorexit;
 	}
 

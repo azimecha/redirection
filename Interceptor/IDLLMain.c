@@ -5,11 +5,16 @@
 #define _X86_
 #include <minwindef.h>
 
+static LONG s_bDidApplyHooks = 0;
+
 BOOL WINAPI ENTRY_POINT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
-        CbDisplayMessageW(L"Magic Ways", L"DLL loaded, press OK when attached.", CbSeverityInfo);
-        return ApplyLibraryLoadHooks() && ApplyProcessCreationHooks();
+        if (InterlockedCompareExchange(&s_bDidApplyHooks, 1, 0) == 0) {
+            CbDisplayMessageW(L"Magic Ways", L"DLL loaded, press OK when attached.", CbSeverityInfo);
+            return ApplyLibraryLoadHooks() && ApplyProcessCreationHooks();
+        }
+        break;
 
     case DLL_THREAD_ATTACH:
         break;

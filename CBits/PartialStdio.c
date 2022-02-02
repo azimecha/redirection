@@ -315,19 +315,25 @@ void vdprintf(const char* pcszFormat, va_list va) {
 }
 
 int stricmp(const char* a, const char* b) {
+	return strnicmp(a, b, SIZE_MAX);
+}
+
+int strnicmp(const char* a, const char* b, size_t n) {
 	char ca, cb;
 
-	while (*a && *b) {
+	while (*a && *b && n) {
 		ca = tolower(*a);
 		cb = tolower(*b);
 		if (ca < cb) return -1;
 		if (ca > cb) return 1;
 
-		a++; b++;
+		a++; b++; n--;
 	}
 
 	// at this point one (or both) is a null so we don't need to convert
-	if (*a < *b)
+	if (n == 0)
+		return 0;
+	else if (*a < *b)
 		return -1;
 	else if (*a > *b)
 		return 1;

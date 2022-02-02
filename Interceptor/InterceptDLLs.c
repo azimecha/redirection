@@ -34,26 +34,51 @@ static BOOL s_RewriteWriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZ
 static LPCSTR s_RewriteGetDLLReplacement(LPCSTR pcszName, RewriteDataBag_p pUserData);
 static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...);
 
+char ConfigFilePath[MAX_PATH] = { 0 };
+
 static NtCreateSection_t s_procRealCreateSection;
 static NtMapViewOfSection_t s_procRealMapViewOfSection;
-static char s_szConfigPath[MAX_PATH];
 static char s_mszExcludePaths[4096];
 
 BOOL ApplyLibraryLoadHooks(void) {
 	NtCreateSection_t procCreateSection;
 	NtMapViewOfSection_t procMapViewOfSection;
 	LPSTR pszExcludePath;
+	PaINIHandle hINI;
+	NTSTATUS status;
 	
 	// would prefer not to do this while holding the loader lock...
-	if (!PaFindConfigFileDirect("shims.ini", GetCurrentProcess(), s_szConfigPath, sizeof(s_szConfigPath))) {
-		dprintf("[ApplyLibraryLoadHooks] PaFindConfigFileDirect failed with error 0x%08X\r\n", GetLastError());
-		return TRUE; // no shims? ok. just don't do anything then
+
+	if (ConfigFilePath[0] == 0) {
+		// this doesn't work if the process hasn't been fully initialized
+		if (!PaFindConfigFileDirect("shims.ini", GetCurrentProcess(), ConfigFilePath, sizeof(ConfigFilePath))) {
+			dprintf("[ApplyLibraryLoadHooks] PaFindConfigFileDirect failed with error 0x%08X\r\n", GetLastError());
+			return TRUE; // no shims? ok. just don't do anything then
+		}
 	}
 
-	if (GetPrivateProfileSectionA("Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths), s_szConfigPath) >= (sizeof(s_mszExcludePaths) - 2)) {
+	DbgPrint("[ApplyLibraryLoadHooks] Reading config file %s\r\n", ConfigFilePath);
+
+#if 0
+	if (GetPrivateProfileSectionA("Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths), ConfigFilePath) >= (sizeof(s_mszExcludePaths) - 2)) {
 		dprintf("[ApplyLibraryLoadHooks] Too many exclude paths!\r\n");
 		return FALSE;
 	}
+#else
+	status = PaINIOpen(ConfigFilePath, &hINI);
+	if (status != 0) {
+		DbgPrint("[ApplyLibraryLoadHooks] Error 0x%08X opening config file\r\n", status);
+		return FALSE;
+	}
+
+	status = PaINIGetSection(hINI, "Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths));
+	PaINIClose(hINI);
+
+	if (status != 0) {
+		DbgPrint("[ApplyLibraryLoadHooks] Error 0x%08X reading exclude paths\r\n", status);
+		return FALSE;
+	}
+#endif
 
 	CB_FOREACH_MULTISZ(pszExcludePath, s_mszExcludePaths)
 		CbStringToLowerA(pszExcludePath);
@@ -63,13 +88,13 @@ BOOL ApplyLibraryLoadHooks(void) {
 #ifdef WAYS_INTERCEPT_SECTION
 	procCreateSection = CbGetNTDLLFunction("NtCreateSection");
 	if (procCreateSection == NULL) {
-		dprintf("[ApplyLibraryLoadHooks] NtCreateSection not found!\r\n");
+		DbgPrint("[ApplyLibraryLoadHooks] NtCreateSection not found!\r\n");
 		return FALSE;
 	}
 
 	s_procRealCreateSection = PaHookSimpleFunction(procCreateSection, 16, s_InterceptedCreateSection);
 	if (s_procRealCreateSection == NULL) {
-		dprintf("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtCreateSection failed with error 0x%08X\r\n", GetLastError());
+		DbgPrint("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtCreateSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
 #endif
@@ -77,13 +102,13 @@ BOOL ApplyLibraryLoadHooks(void) {
 #ifdef WAYS_INTERCEPT_MAPPING
 	procMapViewOfSection = CbGetNTDLLFunction("NtMapViewOfSection");
 	if (procMapViewOfSection == NULL) {
-		dprintf("[ApplyLibraryLoadHooks] NtMapViewOfSection not found!\r\n");
+		DbgPrint("[ApplyLibraryLoadHooks] NtMapViewOfSection not found!\r\n");
 		return FALSE;
 	}
 
 	s_procRealMapViewOfSection = PaHookSimpleFunction(procMapViewOfSection, 16, s_InterceptedMapViewOfSection);
 	if (s_procRealMapViewOfSection == NULL) {
-		dprintf("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
+		DbgPrint("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
 		return FALSE;
 	}
 #endif
@@ -147,7 +172,7 @@ static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACC
 	pszFileName = CbNormalizeModuleName(szFilePath);
 	dprintf("[InterceptedCreateSection] Normalized module name is %s\r\n", pszFileName);
 
-	if (GetPrivateProfileStringA("RedirectDLLs", pszFileName, "", szReplacementName, sizeof(szReplacementName), s_szConfigPath) != 0) {
+	if (GetPrivateProfileStringA("RedirectDLLs", pszFileName, "", szReplacementName, sizeof(szReplacementName), ConfigFilePath) != 0) {
 		dprintf("[InterceptedCreateSection] Replacement with %s requested\r\n", szReplacementName);
 
 		if (!PaFindModulePath(szReplacementName, szReplacementPath, sizeof(szReplacementPath))) {
@@ -287,7 +312,7 @@ static BOOL s_RewriteWriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZ
 
 static LPCSTR s_RewriteGetDLLReplacement(LPCSTR pcszName, RewriteDataBag_p pUserData) {
 	return GetPrivateProfileStringA("RedirectDLLs", pcszName, "", pUserData->szRedirDLLName, sizeof(pUserData->szRedirDLLName) - 1,
-		s_szConfigPath) ? pUserData->szRedirDLLName : NULL;
+		ConfigFilePath) ? pUserData->szRedirDLLName : NULL;
 }
 
 static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...) {
