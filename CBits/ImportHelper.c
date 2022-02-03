@@ -181,3 +181,7 @@ LPVOID CbGetImageEntryPoint(LPVOID pImageBase) {
 
 	return (BYTE*)pImageBase + phdrNT->OptionalHeader.AddressOfEntryPoint;
 }
+
+LPDWORD CbLastErrorAddress(void) {
+	return (LPDWORD)&CbGetTEB()->LastErrorValue;
+}

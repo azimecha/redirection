@@ -1,9 +1,15 @@
 #include "RewriteImports.h"
 #include <FilePaths.h>
+#include <ImportHelper.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <Vfw.h> // FOURCC
+#include <winternl.h>
+
+#define CB_NTDLL_NO_TYPES
+#define CB_NTDLL_NO_FUNCS
+#include <NTDLL.h>
 
 typedef struct _struct_PaRewriteFuncs{
 	PaReadMemoryProc procReadMemory;
@@ -25,6 +31,7 @@ static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdescExports, DWORD nDirSta
 
 static const char s_cszBadForwardPrefix[] = ".dll";
 
+// no kernel32 calls (unless callbacks do)
 BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory, PaWriteMemoryProc procWriteMemory,
 	PaGetReplacementProc procGetDLLReplacement, PaDisplayMessageProc procDisplayInfo, PaDisplayMessageProc procDisplayError,
 	LPVOID pUserData)
@@ -45,7 +52,7 @@ BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory,
 
 	// read the DOS header and find the NT header
 	if (!procReadMemory(xpImageBase, sizeof(hdrDOS), &hdrDOS, pUserData)) {
-		procDisplayError(pUserData, "Error 0x%08X reading image DOS header\r\n", GetLastError());
+		procDisplayError(pUserData, "Error 0x%08X reading image DOS header\r\n", CbLastWinAPIError);
 		return FALSE;
 	}
 
@@ -59,7 +66,7 @@ BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory,
 
 	// read the NT header
 	if (!procReadMemory(xpNTHeaders, sizeof(hdrNT), &hdrNT, pUserData)) {
-		procDisplayError(pUserData, "Error 0x%08X reading image NT headers\r\n", GetLastError());
+		procDisplayError(pUserData, "Error 0x%08X reading image NT headers\r\n", CbLastWinAPIError);
 		return FALSE;
 	}
 
@@ -89,6 +96,7 @@ BOOL PaRewriteImports(EXTERNAL_PTR xpImageBase, PaReadMemoryProc procReadMemory,
 	return s_RewriteDataDirectory(&hdrNT, 0, xpImageBase, &funcs, s_FixBadForwards);
 }
 
+// no kernel32 calls (unless callbacks do)
 static BOOL s_RewriteDataDirectory(PIMAGE_NT_HEADERS phdrNT, DWORD nDirectory, EXTERNAL_PTR xpImageBase, PaRewriteFuncs_p pfuncs, 
 	DataDirOperation_t procOperation) 
 {
@@ -117,7 +125,7 @@ static BOOL s_RewriteDataDirectory(PIMAGE_NT_HEADERS phdrNT, DWORD nDirectory, E
 
 	bSucceeded = FALSE;
 
-	pData = HeapAlloc(GetProcessHeap(), 0, nDirSize);
+	pData = CbHeapAllocate(nDirSize, FALSE);
 	if (pData == NULL) {
 		pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X allocating memory for directory %u\r\n", GetLastError(), nDirectory);
 		return FALSE;
@@ -131,10 +139,11 @@ static BOOL s_RewriteDataDirectory(PIMAGE_NT_HEADERS phdrNT, DWORD nDirectory, E
 	bSucceeded = procOperation(pData, nDirStartRVA, nDirSize, xpImageBase, pfuncs);
 
 L_exit:
-	HeapFree(GetProcessHeap(), 0, pData);
+	CbHeapFree(pData);
 	return bSucceeded;
 }
 
+// no kernel32 calls (unless callbacks do)
 static BOOL s_ReplaceDLLNames(PIMAGE_IMPORT_DESCRIPTOR pdescImports, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, 
 	PaRewriteFuncs_p pfuncs)
 {
@@ -186,6 +195,8 @@ static BOOL s_ReplaceDLLNames(PIMAGE_IMPORT_DESCRIPTOR pdescImports, DWORD nDirS
 // some newer MS DLLs have incorrect forwards - the .dll extension is wrongly included as part of the target DLL name
 // for information on how forwards are stored:
 // https://docs.microsoft.com/en-us/archive/msdn-magazine/2002/march/inside-windows-an-in-depth-look-into-the-win32-portable-executable-file-format-part-2
+// ----------
+// no kernel32 calls (unless callbacks do)
 static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdirExports, DWORD nDirStartRVA, DWORD nDirSize, EXTERNAL_PTR xpImageBase, 
 	PaRewriteFuncs_p pfuncs) 
 {
@@ -204,7 +215,7 @@ static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdirExports, DWORD nDirStar
 		return TRUE;
 
 	// read function RVAs
-	pnFunctionAddrs = HeapAlloc(GetProcessHeap(), 0, nFuncAddrsSize);
+	pnFunctionAddrs = CbHeapAllocate(nFuncAddrsSize, FALSE);
 	if (pnFunctionAddrs == NULL) 
 		return FALSE;
 
@@ -255,6 +266,6 @@ static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdirExports, DWORD nDirStar
 	bSucceeded = TRUE;
 
 L_exit:
-	HeapFree(GetProcessHeap(), 0, pnFunctionAddrs);
+	CbHeapFree(pnFunctionAddrs);
 	return bSucceeded;
 }

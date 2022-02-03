@@ -183,13 +183,16 @@ static BOOL s_FMPAddFilenameAndTry(const char* pcszName, char* pszPathBuffer) {
 	return PaDoesFileExist(pszPathBuffer);
 }
 
+// no kernel32 calls
 BOOL PaDoesFileExist(const char* pcszFilePath) {
-	HANDLE hFile;
+	WCHAR wzFilePath[MAX_PATH + 1];
 
-	hFile = CreateFileA(pcszFilePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
-	CloseHandle(hFile);
+	if (mbstowcs(wzFilePath, pcszFilePath, RTL_NUMBER_OF_V2(wzFilePath)) == -1) {
+		CbLastWinAPIError = ERROR_INSUFFICIENT_BUFFER;
+		return FALSE;
+	}
 
-	return hFile != INVALID_HANDLE_VALUE;
+	return RtlDoesFileExists_U(wzFilePath);
 }
 
 #pragma warning(disable:28112)
@@ -266,6 +269,7 @@ BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nB
 	return TRUE;
 }
 
+// no kernel32 calls
 DWORD PaINIOpen(LPCSTR pcszPath, OUT PaINIHandle* phINI) {
 	HANDLE hFile = NULL, hSection = NULL;
 	NTSTATUS status = 0;
@@ -333,6 +337,7 @@ L_exit:
 	return status;
 }
 
+// no kernel32 calls
 DWORD PaINIGetSection(PaINIHandle hINI, LPCSTR pcszSectionName, OUT LPSTR pszSectionBuf, size_t nBufSize) {
 	LPCSTR pcszPropName, pcszPropValue;
 	int nSection, nProperties, nProperty;
@@ -356,7 +361,7 @@ DWORD PaINIGetSection(PaINIHandle hINI, LPCSTR pcszSectionName, OUT LPSTR pszSec
 		pcszPropValue = ini_property_value((ini_t*)hINI, nSection, nProperty);
 
 		// append key
-		if ((pcszPropName != NULL) && (pcszPropName[0] != NULL)) {
+		if ((pcszPropName != NULL) && (pcszPropName[0] != '\0')) {
 			if (!CbTryAppendToBufferA(&pszSectionBuf, &nBufSize, pcszPropName))
 				return STATUS_BUFFER_TOO_SMALL;
 			if (!CbTryAppendToBufferA(&pszSectionBuf, &nBufSize, "="))
@@ -386,6 +391,7 @@ DWORD PaINIGetSection(PaINIHandle hINI, LPCSTR pcszSectionName, OUT LPSTR pszSec
 	return 0;
 }
 
+// no kernel32 calls
 DWORD PaINIGetValue(PaINIHandle hINI, LPCSTR pcszSectionName, LPCSTR pcszValueName, OUT LPSTR pszValueBuf, size_t nBufSize) {
 	LPCSTR pcszPropValue;
 	int nSection, nProperty;
@@ -412,15 +418,18 @@ DWORD PaINIGetValue(PaINIHandle hINI, LPCSTR pcszSectionName, LPCSTR pcszValueNa
 	return 0;
 }
 
+// no kernel32 calls
 void PaINIClose(PaINIHandle hINI) {
 	if (hINI != NULL)
 		ini_destroy((ini_t*)hINI);
 }
 
+// no kernel32 calls
 static void* s_INIAllocate(void* pUnused, size_t nSize) {
 	return RtlAllocateHeap(s_pINIHeap, 0, nSize);
 }
 
+// no kernel32 calls
 static void s_INIFree(void* pUnused, void* pBlock) {
 	RtlFreeHeap(s_pINIHeap, 0, pBlock);
 }

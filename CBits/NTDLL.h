@@ -74,6 +74,29 @@
 #define STATUS_BUFFER_TOO_SMALL 0xC0000023
 #endif
 
+#ifndef STATUS_NO_SUCH_FILE
+#define STATUS_NO_SUCH_FILE 0xC000000F
+#endif
+
+#ifndef STATUS_SEVERITY_SUCCESS
+#define STATUS_SEVERITY_SUCCESS 0
+#endif
+
+#ifndef STATUS_SEVERITY_INFORMATIONAL
+#define STATUS_SEVERITY_INFORMATIONAL 1
+#endif
+
+#ifndef STATUS_SEVERITY_WARNING
+#define STATUS_SEVERITY_WARNING 2
+#endif
+
+#ifndef STATUS_SEVERITY_ERROR
+#define STATUS_SEVERITY_ERROR 3
+#endif
+
+#define CB_NTSTATUS_SEVERITY(s) (((s) & 0xC0000000) >> 30)
+#define CB_NT_FAILED(s) (CB_NTSTATUS_SEVERITY(s) == STATUS_SEVERITY_ERROR)
+
 typedef DWORD NTSTATUS;
 typedef ULONG ACCESS_MASK;
 
@@ -527,6 +550,10 @@ typedef BOOLEAN(__stdcall* RtlDoesFileExists_U_t)(PCWSTR pcwzPath); // [sic]
 
 typedef ULONG (__stdcall* RtlGetFullPathName_U_t)(PCWSTR pcwzFileName, ULONG nBufSize, OUT PWSTR pwzBuffer, OPTIONAL OUT PWSTR pwzShortName);
 
+typedef void(__stdcall* CbNTSubroutine_t)(void);
+
+typedef NTSTATUS(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
+
 #endif // CB_NTDLL_NO_TYPES
 
 typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
@@ -552,8 +579,6 @@ typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
 		};
 	};
 } LDR_DATA_TABLE_ENTRY_FULL, * PLDR_DATA_TABLE_ENTRY_FULL;
-
-typedef NTSTATUS(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
 
 // Define CB_NTDLL_NO_TYPES to prevent any functions from being declared that could conflict with ones in Windows headers
 #ifndef CB_NTDLL_NO_FUNCS
@@ -594,18 +619,22 @@ PVOID __stdcall RtlCreateHeap(ULONG flags, OPTIONAL PVOID pBase, OPTIONAL SIZE_T
 PVOID __stdcall RtlAllocateHeap(PVOID pHeap, OPTIONAL ULONG flags, SIZE_T nSize);
 BOOL __stdcall RtlFreeHeap(PVOID pHeap, OPTIONAL ULONG flags, PVOID pBlock);
 PVOID __stdcall RtlDestroyHeap(PVOID pHeap);
+void __stdcall RtlAcquirePebLock(void);
+void __stdcall RtlReleasePebLock(void);
 
 NTSTATUS __stdcall LdrLoadDll(OPTIONAL PWCHAR pwzFullPath, ULONG flags, PUNICODE_STRING pusModuleName, OUT PHANDLE phModule);
 
 #define DbgPrint(f,...) (CbGetDebugPrintFunction()((f),__VA_ARGS__))
+DbgPrint_t CbGetDebugPrintFunction(void);
 
 #endif // CB_NTDLL_NO_FUNCS
 
-LPVOID __stdcall CbGetNTDLLFunction(LPCSTR pcszFuncName);
-LPVOID __stdcall CbGetNTDLLBaseAddress(void);
-DbgPrint_t __stdcall CbGetDebugPrintFunction(void);
+LPVOID CbGetNTDLLFunction(LPCSTR pcszFuncName);
+LPVOID CbGetNTDLLBaseAddress(void);
 
 NTSTATUS CbCreateFileNT(LPCSTR pcszPath, ACCESS_MASK access, ULONG nShareMode, ULONG nCreateDisposition, ULONG options, OUT PHANDLE phFile);
+NTSTATUS CbGetSectionName(HANDLE hProcess, LPVOID pMemoryArea, LPSTR pszNameBuf, SIZE_T nBufSize);
+NTSTATUS CbGetCurrentDirectoryNT(LPSTR pszBuffer, SIZE_T nBufSize);
 
 typedef enum _enum_CbSeverity {
 	CbSeverityNull,
@@ -624,5 +653,9 @@ NTSTATUS CbDisplayMessageW(LPCWSTR pcwzTitle, LPCWSTR pcwzMessage, CbSeverity_t 
 // set this before calling NTDLL funcs to force a specific address
 // useful if running in an environment where the loaded modules list is uninitialized
 extern LPVOID CbNTDLLBaseAddress;
+
+// ntdll-only thread-safe heap functions
+PVOID CbHeapAllocate(SIZE_T nBytes, BOOL bZeroInit);
+void CbHeapFree(PVOID pBlock);
 
 #endif

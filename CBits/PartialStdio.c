@@ -296,7 +296,7 @@ static char* s_CallbackDebugPrint(char const* pcsBuf, char* pBufferStart, int nB
 	memcpy(szTempBuf, pcsBuf, nBufFill);
 	szTempBuf[nBufFill] = 0;
 
-	OutputDebugStringA(szTempBuf);
+	DbgPrint("%s", szTempBuf);
 
 	return pBufferStart;
 }

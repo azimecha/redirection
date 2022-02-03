@@ -56,7 +56,7 @@ __declspec(naked) static inline struct _PEB* __stdcall CbGetPEB(void) {
 	__asm RET 0;
 }
 
-#define CbLastWinAPIError (CbGetTEB()->LastErrorValue)
+#define CbLastWinAPIError (*CbLastErrorAddress())
 
 struct _LDR_DATA_TABLE_ENTRY_FULL* CbGetLoadedImageByIndex(unsigned nIndex);
 struct _LDR_DATA_TABLE_ENTRY_FULL* CbGetLoadedImageByName(LPCSTR pcszModuleName);
@@ -66,5 +66,6 @@ DWORD CbGetSymbolAddressEx(LPVOID pImageBase, LPCSTR pcszSymbolName, WORD nOrdin
 LPSTR CbNormalizeModuleName(LPSTR pszName);
 PIMAGE_NT_HEADERS CbGetImageNTHeaders(LPVOID pImageBase);
 LPVOID CbGetImageEntryPoint(LPVOID pImageBase);
+LPDWORD CbLastErrorAddress(void);
 
 #endif

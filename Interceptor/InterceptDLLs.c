@@ -33,24 +33,24 @@ static BOOL s_RewriteReadMemory(EXTERNAL_PTR pSrcBase, SIZE_T nSize, LPVOID pDes
 static BOOL s_RewriteWriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZE_T nSize, LPVOID pUserData);
 static LPCSTR s_RewriteGetDLLReplacement(LPCSTR pcszName, RewriteDataBag_p pUserData);
 static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...);
+static BOOL s_MinimalFindDLL(LPCSTR pcszName, LPSTR pszPathBuf, SIZE_T nPathBufSize);
 
 char ConfigFilePath[MAX_PATH] = { 0 };
 
 static NtCreateSection_t s_procRealCreateSection;
 static NtMapViewOfSection_t s_procRealMapViewOfSection;
 static char s_mszExcludePaths[4096];
+static PaINIHandle s_hINI;
 
+// may be called before kernel32 is loaded, can't call any kernel32 functions
 BOOL ApplyLibraryLoadHooks(void) {
 	NtCreateSection_t procCreateSection;
 	NtMapViewOfSection_t procMapViewOfSection;
 	LPSTR pszExcludePath;
-	PaINIHandle hINI;
 	NTSTATUS status;
-	
-	// would prefer not to do this while holding the loader lock...
 
 	if (ConfigFilePath[0] == 0) {
-		// this doesn't work if the process hasn't been fully initialized
+		// this is the only part that is not no-Kernel32 safe
 		if (!PaFindConfigFileDirect("shims.ini", GetCurrentProcess(), ConfigFilePath, sizeof(ConfigFilePath))) {
 			dprintf("[ApplyLibraryLoadHooks] PaFindConfigFileDirect failed with error 0x%08X\r\n", GetLastError());
 			return TRUE; // no shims? ok. just don't do anything then
@@ -59,31 +59,22 @@ BOOL ApplyLibraryLoadHooks(void) {
 
 	DbgPrint("[ApplyLibraryLoadHooks] Reading config file %s\r\n", ConfigFilePath);
 
-#if 0
-	if (GetPrivateProfileSectionA("Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths), ConfigFilePath) >= (sizeof(s_mszExcludePaths) - 2)) {
-		dprintf("[ApplyLibraryLoadHooks] Too many exclude paths!\r\n");
-		return FALSE;
-	}
-#else
-	status = PaINIOpen(ConfigFilePath, &hINI);
+	status = PaINIOpen(ConfigFilePath, &s_hINI);
 	if (status != 0) {
 		DbgPrint("[ApplyLibraryLoadHooks] Error 0x%08X opening config file\r\n", status);
 		return FALSE;
 	}
 
-	status = PaINIGetSection(hINI, "Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths));
-	PaINIClose(hINI);
+	status = PaINIGetSection(s_hINI, "Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths));
+	PaINIClose(s_hINI);
 
 	if (status != 0) {
 		DbgPrint("[ApplyLibraryLoadHooks] Error 0x%08X reading exclude paths\r\n", status);
 		return FALSE;
 	}
-#endif
 
 	CB_FOREACH_MULTISZ(pszExcludePath, s_mszExcludePaths)
 		CbStringToLowerA(pszExcludePath);
-
-	// ... but it's important for this part
 
 #ifdef WAYS_INTERCEPT_SECTION
 	procCreateSection = CbGetNTDLLFunction("NtCreateSection");
@@ -147,7 +138,7 @@ static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACC
 
 	status = NtQueryInformationFile(hFile, &iosb, arrFileNameInfo, sizeof(arrFileNameInfo), FileNameInformation);
 	if (status != 0) {
-		dprintf("[InterceptedCreateSection] NtQueryInformationFile on 0x%08X returned 0x%08X\r\n", (uintptr_t)hFile, status);
+		DbgPrint("[InterceptedCreateSection] NtQueryInformationFile on 0x%08X returned 0x%08X\r\n", (uintptr_t)hFile, status);
 		return status;
 	}
 
@@ -163,40 +154,40 @@ static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACC
 
 	status = RtlUnicodeStringToAnsiString(&asFilePath, &usFilePath, FALSE);
 	if (status != 0) {
-		dprintf("[InterceptedCreateSection] RtlUnicodeStringToAnsiString for file 0x%08X returned 0x%08X\r\n", (uintptr_t)hFile, status);
+		DbgPrint("[InterceptedCreateSection] RtlUnicodeStringToAnsiString for file 0x%08X returned 0x%08X\r\n", (uintptr_t)hFile, status);
 		return status;
 	}
 
 	szFilePath[asFilePath.Length] = 0;
-	dprintf("[InterceptedCreateSection] Requested to map image %s\r\n", szFilePath);
+	DbgPrint("[InterceptedCreateSection] Requested to map image %s\r\n", szFilePath);
 	pszFileName = CbNormalizeModuleName(szFilePath);
-	dprintf("[InterceptedCreateSection] Normalized module name is %s\r\n", pszFileName);
+	DbgPrint("[InterceptedCreateSection] Normalized module name is %s\r\n", pszFileName);
 
-	if (GetPrivateProfileStringA("RedirectDLLs", pszFileName, "", szReplacementName, sizeof(szReplacementName), ConfigFilePath) != 0) {
-		dprintf("[InterceptedCreateSection] Replacement with %s requested\r\n", szReplacementName);
+	status = PaINIGetValue(s_hINI, "RedirectDLLs", pszFileName, szReplacementName, sizeof(szReplacementName));
+	if (status == 0) {
+		DbgPrint("[InterceptedCreateSection] Replacement with %s requested\r\n", szReplacementName);
 
-		if (!PaFindModulePath(szReplacementName, szReplacementPath, sizeof(szReplacementPath))) {
-			dprintf("[InterceptedCreateSection] Module could not be located!\r\n");
-			return STATUS_DLL_NOT_FOUND;
+		if (!s_MinimalFindDLL(szReplacementName, szReplacementPath, sizeof(szReplacementPath))) {
+			DbgPrint("[InterceptedCreateSection] Could not find DLL!\r\n");
+			return STATUS_NO_SUCH_FILE;
 		}
 
-		dprintf("[InterceptedCreateSection] Module located at %s\r\n", szReplacementPath);
-
-		hFile = CreateFileA(szReplacementPath, GENERIC_READ | GENERIC_EXECUTE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-		if (hFile == INVALID_HANDLE_VALUE) {
-			dprintf("[InterceptedCreateSection] Error 0x%08X opening module file\r\n", GetLastError());
-			return 0xC0000136; // STATUS_OPEN_FAILED, yeah i know, we just need *something* that's an error code
+		status = CbCreateFileNT(szReplacementPath, GENERIC_READ | GENERIC_EXECUTE, FILE_SHARE_READ, OPEN_EXISTING, 0, &hFile);
+		if (status != 0) {
+			DbgPrint("[InterceptedCreateSection] Error 0x%08X opening module file\r\n", status);
+			return status;
 		}
 
 		bDidOpenFile = TRUE;
-	}
+	} else if (status != STATUS_NOT_FOUND)
+		DbgPrint("[InterceptedCreateSection] PaINIGetValue returned status 0x%08X\r\n", status);
 
-	dprintf("[InterceptedCreateSection] Calling NtCreateSection\r\n");
+	DbgPrint("[InterceptedCreateSection] Calling NtCreateSection\r\n");
 	status = s_procRealCreateSection(phSection, access, attrib, pnMaxSize, nProtection, nAllocAttribs, hFile);
-	dprintf("[InterceptedCreateSection] NtCreateSection returned 0x%08X\r\n", status);
+	DbgPrint("[InterceptedCreateSection] NtCreateSection returned 0x%08X\r\n", status);
 
 	// don't worry, creating a section keeps it open as long as the section exists
-	if (bDidOpenFile) CloseHandle(hFile);
+	if (bDidOpenFile) NtClose(hFile);
 
 	return status;
 }
@@ -207,6 +198,8 @@ static NTSTATUS __stdcall s_InterceptedMapViewOfSection(HANDLE hSection, HANDLE 
 {
 	NTSTATUS status;
 	SECTION_IMAGE_INFORMATION infImageSection;
+
+	DbgPrint("[InterceptedMapViewOfSection] Requested to map section 0x%08X in process 0x%08X\r\n", hSection, hProcess);
 
 	if (GetProcessId(hProcess) == GetCurrentProcessId()) {
 		status = NtQuerySection(hSection, SectionImageInformation, &infImageSection, sizeof(infImageSection), NULL);
@@ -227,53 +220,40 @@ static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HA
 {
 	NTSTATUS status, statusAbort;
 	RewriteDataBag_t data;
-	BYTE arrNameUniBuffer[MAX_PATH * 3];
-	PUNICODE_STRING pusModuleName;
-	CHAR szNameAscBuffer[MAX_PATH + 1];
-	ANSI_STRING asModuleName;
 	ULONG nResultSize;
 	LPSTR pszExcludePath;
 	int* pnNoRedirectMarker;
+	CHAR szNameAscBuffer[MAX_PATH + 1];
 
 	RtlSecureZeroMemory(&data, sizeof(data));
 
 	status = s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
 		nInheritDisposition, nAllocationType, nWin32Protection);
-	if (status != 0) {
-		dprintf("[InterceptedMapViewOfSection] RealMapViewOfSection returned 0x%08X\r\n", status);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptedMapViewOfSection] RealMapViewOfSection returned 0x%08X\r\n", status);
 		return status;
 	}
 
+	DbgPrint("[InterceptedMapViewOfSection] Section mapped at 0x%08X\r\n", *ppBaseAddress);
+
 	pnNoRedirectMarker = CbGetSymbolAddress(*ppBaseAddress, "NoRedirectImports");
 	if ((pnNoRedirectMarker != NULL) && (*pnNoRedirectMarker == 1)) {
-		dprintf("[InterceptedMapViewOfSection] Module excluded from import table rewrite (NoRedirectImports=1)\r\n");
+		DbgPrint("[InterceptedMapViewOfSection] Module excluded from import table rewrite (NoRedirectImports=1)\r\n");
 		return 0;
 	}
 
-	status = NtQueryVirtualMemory(hProcess, *ppBaseAddress, MemorySectionName, arrNameUniBuffer, sizeof(arrNameUniBuffer), &nResultSize);
+	status = CbGetSectionName(hProcess, *ppBaseAddress, szNameAscBuffer, sizeof(szNameAscBuffer));
 	if (status != 0) {
-		dprintf("[InterceptedMapViewOfSection] NtQueryVirtualMemory returned 0x%08X\r\n", status);
-		goto L_abort;
+		DbgPrint("[InterceptedMapViewOfSection] CbGetSectionName returned 0x%08X\r\n", status);
+		return status;
 	}
 
-	pusModuleName = (PUNICODE_STRING)&arrNameUniBuffer[0];
-	asModuleName.Buffer = szNameAscBuffer;
-	asModuleName.Length = 0;
-	asModuleName.MaximumLength = sizeof(szNameAscBuffer) - 1;
-
-	status = RtlUnicodeStringToAnsiString(&asModuleName, pusModuleName, FALSE);
-	if (status != 0) {
-		dprintf("[InterceptedMapViewOfSection] RtlUnicodeStringToAnsiString returned 0x%08X\r\n", status);
-		goto L_abort;
-	}
-
-	szNameAscBuffer[asModuleName.Length] = 0;
 	CbStringToLowerA(szNameAscBuffer);
-	dprintf("[InterceptedMapViewOfSection] Module path: %s\r\n", szNameAscBuffer);
+	DbgPrint("[InterceptedMapViewOfSection] Module path: %s\r\n", szNameAscBuffer);
 
 	CB_FOREACH_MULTISZ(pszExcludePath, s_mszExcludePaths) {
 		if (strstr(szNameAscBuffer, pszExcludePath) != NULL) {
-			dprintf("[InterceptedMapViewOfSection] Module excluded from import table rewrite by rule: %s\r\n", pszExcludePath);
+			DbgPrint("[InterceptedMapViewOfSection] Module excluded from import table rewrite by rule: %s\r\n", pszExcludePath);
 			return 0;
 		}
 	}
@@ -281,7 +261,7 @@ static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HA
 	if (!PaRewriteImports(*ppBaseAddress, s_RewriteReadMemory, s_RewriteWriteMemory, s_RewriteGetDLLReplacement, s_RewriteDisplayMessage,
 		s_RewriteDisplayMessage, &data))
 	{
-		dprintf("[InterceptedMapViewOfSection] PaRewriteImports failed with error 0x%08X\r\n", CbGetTEB()->LastErrorValue);
+		DbgPrint("[InterceptedMapViewOfSection] PaRewriteImports failed with error 0x%08X\r\n", CbGetTEB()->LastErrorValue);
 		status = STATUS_DLL_INIT_FAILED; // again, we just need some kind of error code
 		goto L_abort;
 	}
@@ -301,24 +281,99 @@ static BOOL s_RewriteReadMemory(EXTERNAL_PTR pSrcBase, SIZE_T nSize, LPVOID pDes
 }
 
 static BOOL s_RewriteWriteMemory(LPCVOID pSrcBuffer, EXTERNAL_PTR pDestBase, SIZE_T nSize, LPVOID pUserData) {
-	DWORD nOldProt;
+	NTSTATUS status;
+	PVOID pProtectBase;
+	SIZE_T nToProtect;
+	ULONG nOldProtection;
 
-	if (!VirtualProtect(pDestBase, nSize, PAGE_EXECUTE_READWRITE, &nOldProt))
+	pProtectBase = pDestBase; nToProtect = nSize; nOldProtection = 0;
+	status = NtProtectVirtualMemory(CB_CURRENT_PROCESS, &pProtectBase, &nToProtect, PAGE_EXECUTE_READWRITE, &nOldProtection);
+	if (status != 0) {
+		DbgPrint("[RewriteVirtualMemory] NtProtectVirtualMemory returned status 0x%08X setting %u bytes at 0x%08X to RWX\r\n",
+			status, pDestBase, nSize);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
 		return FALSE;
+	}
 
 	memcpy(pDestBase, pSrcBuffer, nSize);
 	return TRUE;
 }
 
 static LPCSTR s_RewriteGetDLLReplacement(LPCSTR pcszName, RewriteDataBag_p pUserData) {
-	return GetPrivateProfileStringA("RedirectDLLs", pcszName, "", pUserData->szRedirDLLName, sizeof(pUserData->szRedirDLLName) - 1,
-		ConfigFilePath) ? pUserData->szRedirDLLName : NULL;
+	NTSTATUS status;
+
+	status = PaINIGetValue(s_hINI, "RedirectDLLs", pcszName, pUserData->szRedirDLLName, sizeof(pUserData->szRedirDLLName));
+
+	switch (status) {
+	case 0:
+		return pUserData->szRedirDLLName;
+
+	case STATUS_NOT_FOUND:
+		return NULL;
+
+	default:
+		DbgPrint("[RewriteGetDLLReplacement] PaINIGetValue returned status 0x%08X\r\n", status);
+		return NULL;
+	}	
 }
 
 static void s_RewriteDisplayMessage(LPVOID pUserData, LPCSTR pcszFormat, ...) {
 	va_list va;
 	va_start(va, pcszFormat);
-	dprintf("[InterceptedMapViewOfSection] [PaRewriteImports] ");
+	DbgPrint("[InterceptedMapViewOfSection] [PaRewriteImports] ");
 	vdprintf(pcszFormat, va);
 	va_end(va);
+}
+
+static BOOL s_AppendAndCheck(LPCSTR pcszName, LPSTR pszPathBuf, SIZE_T nPathBufSize) {
+	size_t nPathLen;
+
+	nPathLen = strlen(pszPathBuf);
+	if ((nPathLen + strlen(pcszName) + 1) >= nPathBufSize)
+		return FALSE;
+
+	if (pszPathBuf[nPathLen - 1] != '\\')
+		strcat(pszPathBuf, "\\");
+	strcat(pszPathBuf, pcszName);
+
+	return PaDoesFileExist(pszPathBuf);
+}
+
+static BOOL s_MinimalFindDLL(LPCSTR pcszName, LPSTR pszPathBuf, SIZE_T nPathBufSize) {
+	NTSTATUS status;
+	SECTION_IMAGE_INFORMATION infSection;
+	LPSTR pszFileName;
+
+	// executable directory
+	do {
+		status = CbGetSectionName(CB_CURRENT_PROCESS, ((PPEB_FULL)CbGetPEB())->ImageBaseAddress, pszPathBuf, nPathBufSize);
+		if (status != 0) break;
+
+		if (s_AppendAndCheck(pcszName, pszPathBuf, nPathBufSize))
+			return TRUE;
+	} while (0);
+
+	// current directory
+	do {
+		status = CbGetCurrentDirectoryNT(pszPathBuf, nPathBufSize);
+		if (status != 0) break;
+
+		if (s_AppendAndCheck(pcszName, pszPathBuf, nPathBufSize))
+			return TRUE;
+	} while (0);
+
+	// config file directory
+	do {
+		if (strlen(ConfigFilePath) >= nPathBufSize) break;
+		strcpy(pszPathBuf, ConfigFilePath);
+
+		pszFileName = CbPathGetFilenameA(pszPathBuf);
+		if (pszFileName == NULL) break;
+		*pszFileName = 0;
+
+		if (s_AppendAndCheck(pcszName, pszPathBuf, nPathBufSize))
+			return TRUE;
+	} while (0);
+
+	return FALSE;
 }
