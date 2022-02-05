@@ -1,7 +1,4 @@
-; Automatically generated redirect definition file
-; Original library: E:\Projects\ProGamer\Redirection\XPDLLs\advapi32.dll
-
-LIBRARY "ADVAPI32.dll"
+LIBRARY "advapi_r.dll" BASE=0x6E500000
 EXPORTS
 ; Required
 NoRedirectImports

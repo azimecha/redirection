@@ -342,10 +342,18 @@ int strnicmp(const char* a, const char* b, size_t n) {
 }
 
 int strccat(char* pszDest, size_t nDestBufSize, const char* pcszSrc) {
+	if (nDestBufSize == 0)
+		return pcszSrc[0] == '\0';
+
+	nDestBufSize--; // leave space for null
+
 	while (*pszDest && (nDestBufSize > 0)) {
 		pszDest++;
 		nDestBufSize--;
 	}
+
+	if (nDestBufSize == 0)
+		return pcszSrc[0] == '\0';
 
 	while (*pcszSrc && (nDestBufSize > 0)) {
 		*pszDest = *pcszSrc;
@@ -354,6 +362,7 @@ int strccat(char* pszDest, size_t nDestBufSize, const char* pcszSrc) {
 		nDestBufSize--;
 	}
 
+	*pszDest = 0;
 	return *pcszSrc == 0;
 }
 

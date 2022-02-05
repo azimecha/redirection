@@ -25,6 +25,7 @@ DECLSPEC_NORETURN void __stdcall ProcessEntryPointThunk(void);
 DECLSPEC_NORETURN static void __stdcall s_CallOriginalThunk(LPVOID pStartAddr, LPVOID pParam);
 DECLSPEC_NORETURN void __stdcall ProcessEntryPoint(LPVOID pStartAddr, LPVOID pParam);
 DECLSPEC_NORETURN static void s_Die(void);
+void __stdcall s_PreInitThunk(void);
 
 #if 0
 static BOOL s_MiniFindDLL(LPCWSTR pcwzName, OUT PUNICODE_STRING pusFullPath);
@@ -48,59 +49,76 @@ WCHAR MagicWaysPath[MAX_PATH + 1] = { 0 };
 // shimmer will store path to config file here
 WCHAR ConfigFilePath[MAX_PATH + 1] = { 0 };
 
+// PreInitThunk will set this to point to the actual NTDLL LdrInitializeThunk
+static LdrInitializeThunk_t procLdrInitializeThunk = NULL;
+
 // this will be called instead of LdrInitializeThunk
-DECLSPEC_NORETURN void __stdcall ProcessInitThunk(LPVOID p1, LPVOID p2, LPVOID p3) {
-    LdrInitializeThunk_t procLdrInitializeThunk;
+DECLSPEC_NORETURN DECLSPEC_NAKED void __stdcall ProcessInitThunk(LPVOID p1, LPVOID p2, LPVOID p3) {
+    __asm {
+        CALL s_PreInitThunk
+        PUSH DWORD PTR procLdrInitializeThunk
+        RET
+    }
+}
+
+void __stdcall s_PreInitThunk(void) {
     LdrGetProcedureAddress_t procLdrGetProcedureAddress;
     PaHookCode_p phook;
     NTSTATUS status;
     ULONG nOldProt, nBytesToProt;
     PVOID pToProt;
 
-    // remove LdrInitializeThunk hook
+    __try {
+        // remove LdrInitializeThunk hook
+        procLdrInitializeThunk = CbGetNTDLLFunction("LdrInitializeThunk");
+        if (procLdrInitializeThunk == NULL) {
+            CbDisplayMessageW(L"Error", L"Unable to find LdrInitializeThunk in NTDLL.", CbSeverityError);
+            s_Die();
+        }
 
-    procLdrInitializeThunk = CbGetNTDLLFunction("LdrInitializeThunk");
-    if (procLdrInitializeThunk == NULL) {
-        CbDisplayMessageW(L"Error", L"Unable to find LdrInitializeThunk in NTDLL.", CbSeverityError);
+        memcpy(procLdrInitializeThunk, InitThunkCode, sizeof(InitThunkCode));
+        status = NtFlushInstructionCache(MG_CURRENT_PROCESS, procLdrInitializeThunk, sizeof(InitThunkCode));
+        if (status != 0)
+            CbDisplayMessageW(L"Warning", L"Error flushing instruction cache (1).\r\nLdrInitializeThunk may not work.", CbSeverityWarning);
+
+        // replace LdrGetProcedureAddress
+        procLdrGetProcedureAddress = CbGetNTDLLFunction("LdrGetProcedureAddress");
+        if (procLdrGetProcedureAddress == NULL) {
+            CbDisplayMessageW(L"Error", L"Unable to find LdrGetProcedureAddress in NTDLL.", CbSeverityError);
+            s_Die();
+        }
+
+        nBytesToProt = sizeof(*phook);
+        pToProt = procLdrGetProcedureAddress;
+        status = NtProtectVirtualMemory(MG_CURRENT_PROCESS, &pToProt, &nBytesToProt, PAGE_EXECUTE_READWRITE, &nOldProt);
+        if (status != 0) {
+            CbDisplayMessageW(L"Error", L"Unable to make LdrGetProcedureAddress writable.", CbSeverityError);
+            s_Die();
+        }
+
+        phook = (PaHookCode_p)procLdrGetProcedureAddress;
+        phook->instrPush = PA_HOOK_INSTR_PUSH;
+        phook->pJumpAddr = (LPVOID)s_GetProcedureAddress;
+        phook->instrRet = PA_HOOK_INSTR_RET;
+
+        status = NtFlushInstructionCache(MG_CURRENT_PROCESS, phook, sizeof(*phook));
+        if (status != 0)
+            CbDisplayMessageW(L"Warning", L"Error flushing instruction cache (3).\r\nNtCreateFile may not work.", CbSeverityWarning);
+    } __except (CbDisplayError(GetExceptionCode(), GetExceptionInformation(), "preparing for loader initialization"), EXCEPTION_EXECUTE_HANDLER) {
+        NtTerminateProcess(CB_CURRENT_PROCESS, (NTSTATUS)GetExceptionCode());
         s_Die();
     }
 
-    memcpy(procLdrInitializeThunk, InitThunkCode, sizeof(InitThunkCode));
-    status = NtFlushInstructionCache(MG_CURRENT_PROCESS, procLdrInitializeThunk, sizeof(InitThunkCode));
-    if (status != 0)
-        CbDisplayMessageW(L"Warning", L"Error flushing instruction cache (1).\r\nLdrInitializeThunk may not work.", CbSeverityWarning);
-
-    // replace LdrGetProcedureAddress
-
-    procLdrGetProcedureAddress = CbGetNTDLLFunction("LdrGetProcedureAddress");
-    if (procLdrGetProcedureAddress == NULL) {
-        CbDisplayMessageW(L"Error", L"Unable to find LdrGetProcedureAddress in NTDLL.", CbSeverityError);
+    /*__try {
+        // call original LdrInitializeThunk
+        procLdrInitializeThunk(p1, p2, p3);
+    } __except (CbDisplayError(GetExceptionCode(), GetExceptionInformation(), "executing process"), EXCEPTION_EXECUTE_HANDLER) {
+        NtTerminateProcess(CB_CURRENT_PROCESS, (NTSTATUS)GetExceptionCode());
         s_Die();
     }
-
-    nBytesToProt = sizeof(*phook);
-    pToProt = procLdrGetProcedureAddress;
-    status = NtProtectVirtualMemory(MG_CURRENT_PROCESS, &pToProt, &nBytesToProt, PAGE_EXECUTE_READWRITE, &nOldProt);
-    if (status != 0) {
-        CbDisplayMessageW(L"Error", L"Unable to make LdrGetProcedureAddress writable.", CbSeverityError);
-        s_Die();
-    }
-
-    phook = (PaHookCode_p)procLdrGetProcedureAddress;
-    phook->instrPush = PA_HOOK_INSTR_PUSH;
-    phook->pJumpAddr = (LPVOID)s_GetProcedureAddress;
-    phook->instrRet = PA_HOOK_INSTR_RET;
-
-    status = NtFlushInstructionCache(MG_CURRENT_PROCESS, phook, sizeof(*phook));
-    if (status != 0)
-        CbDisplayMessageW(L"Warning", L"Error flushing instruction cache (3).\r\nNtCreateFile may not work.", CbSeverityWarning);
-
-    // call original LdrInitializeThunk
-
-    procLdrInitializeThunk(p1, p2, p3);
 
     CbDisplayMessageW(L"Warning", L"LdrInitializeThunk returned - this should not happen.", CbSeverityWarning);
-    s_Die();
+    s_Die();*/
 }
 
 #pragma warning(disable:28112)
@@ -115,42 +133,46 @@ static NTSTATUS __stdcall s_GetProcedureAddress(HMODULE hModule, OPTIONAL PANSI_
     char szFuncName[256];
     NTSTATUS status;
 
-    DbgPrint("[GetProcedureAddress] Module: 0x%08X, name ptr: 0x%08X, ordinal: 0x%08X, K32 loaded: %d\r\n", (UINT_PTR)hModule, 
-        (UINT_PTR)pasFuncName, (UINT_PTR)nOrdinal, s_bKernel32Loaded);
+    __try {
+        DbgPrint("[GetProcedureAddress] Module: 0x%08X, name ptr: 0x%08X, ordinal: 0x%08X, K32 loaded: %d\r\n", (UINT_PTR)hModule,
+            (UINT_PTR)pasFuncName, (UINT_PTR)nOrdinal, s_bKernel32Loaded);
 
-    // check if kernel32 has just been loaded
-    if (s_bKernel32Loaded == 0) {
-        pentKernel32 = CbGetLoadedImageByName("kernel32.dll");
-        if (pentKernel32 != NULL) {
-            if (InterlockedCompareExchange(&s_bKernel32Loaded, 1, 0) == 0) {
-                DbgPrint("[GetProcedureAddress] Kernel32 was just loaded!\r\n");
-                s_OnKernel32Loaded(pentKernel32);
+        // check if kernel32 has just been loaded
+        if (s_bKernel32Loaded == 0) {
+            pentKernel32 = CbGetLoadedImageByName("kernel32.dll");
+            if (pentKernel32 != NULL) {
+                if (InterlockedCompareExchange(&s_bKernel32Loaded, 1, 0) == 0) {
+                    DbgPrint("[GetProcedureAddress] Kernel32 was just loaded!\r\n");
+                    s_OnKernel32Loaded(pentKernel32);
+                }
             }
         }
-    }
 
-    // check output addr
-    if (ppAddressOUT == NULL) {
-        DbgPrint("[GetProcedureAddress] Exiting early (invalid output address)\r\n");
-        return STATUS_INVALID_PARAMETER_4;
-    }
-
-    // ensure function name is null terminated
-    if ((pasFuncName != NULL) && (pasFuncName->Buffer != NULL)) {
-        if (pasFuncName->Length >= sizeof(szFuncName)) {
-            DbgPrint("[GetProcedureAddress] Symbol name is too long at %u bytes\r\n", pasFuncName->Length);
-            return STATUS_INVALID_PARAMETER_2;
+        // check output addr
+        if (ppAddressOUT == NULL) {
+            DbgPrint("[GetProcedureAddress] Exiting early (invalid output address)\r\n");
+            return STATUS_INVALID_PARAMETER_4;
         }
 
-        memcpy(szFuncName, pasFuncName->Buffer, pasFuncName->Length);
-        szFuncName[pasFuncName->Length] = 0;
+        // ensure function name is null terminated
+        if ((pasFuncName != NULL) && (pasFuncName->Buffer != NULL)) {
+            if (pasFuncName->Length >= sizeof(szFuncName)) {
+                DbgPrint("[GetProcedureAddress] Symbol name is too long at %u bytes\r\n", pasFuncName->Length);
+                return STATUS_INVALID_PARAMETER_2;
+            }
 
-        DbgPrint("[GetProcedureAddress] Name: %s\r\n", szFuncName);
+            memcpy(szFuncName, pasFuncName->Buffer, pasFuncName->Length);
+            szFuncName[pasFuncName->Length] = 0;
+
+            DbgPrint("[GetProcedureAddress] Name: %s\r\n", szFuncName);
+        }
+
+        // try to find the symbol
+        status = CbGetSymbolAddressEx((LPVOID)hModule, szFuncName, nOrdinal, ppAddressOUT);
+        DbgPrint("[GetProcedureAddress] Status: 0x%08X, symbol addr: 0x%08X\r\n", status, (UINT_PTR)*ppAddressOUT);
+    } __except (CbDisplayError(GetExceptionCode(), GetExceptionInformation(), "retrieving symbol address"), EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
     }
-
-    // try to find the symbol
-    status = CbGetSymbolAddressEx((LPVOID)hModule, szFuncName, nOrdinal, ppAddressOUT);
-    DbgPrint("[GetProcedureAddress] Status: 0x%08X, symbol addr: 0x%08X\r\n", status, (UINT_PTR)*ppAddressOUT);
 
     return status;
 }

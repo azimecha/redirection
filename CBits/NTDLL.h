@@ -554,6 +554,8 @@ typedef void(__stdcall* CbNTSubroutine_t)(void);
 
 typedef NTSTATUS(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
 
+typedef void(__stdcall* RtlUnwind_t)(PVOID pTargetFrame, PVOID pTargetIP, PEXCEPTION_RECORD pExceptionRecord, PVOID pReturnValue);
+
 #endif // CB_NTDLL_NO_TYPES
 
 typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
@@ -621,6 +623,7 @@ BOOL __stdcall RtlFreeHeap(PVOID pHeap, OPTIONAL ULONG flags, PVOID pBlock);
 PVOID __stdcall RtlDestroyHeap(PVOID pHeap);
 void __stdcall RtlAcquirePebLock(void);
 void __stdcall RtlReleasePebLock(void);
+void __stdcall CbRtlUnwind(PVOID pTargetFrame, PVOID pTargetIP, PEXCEPTION_RECORD pExceptionRecord, PVOID pReturnValue);
 
 NTSTATUS __stdcall LdrLoadDll(OPTIONAL PWCHAR pwzFullPath, ULONG flags, PUNICODE_STRING pusModuleName, OUT PHANDLE phModule);
 
@@ -649,6 +652,7 @@ typedef enum _enum_CbSeverity {
 NTSTATUS CbDisplayMessageUni(PUNICODE_STRING pusTitle, PUNICODE_STRING pusMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayMessageA(LPCSTR pcszTitle, LPCSTR pcszMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayMessageW(LPCWSTR pcwzTitle, LPCWSTR pcwzMessage, CbSeverity_t sev);
+NTSTATUS CbDisplayError(DWORD nErrorCode, PEXCEPTION_POINTERS pex, LPCSTR pcszContext);
 
 // set this before calling NTDLL funcs to force a specific address
 // useful if running in an environment where the loaded modules list is uninitialized

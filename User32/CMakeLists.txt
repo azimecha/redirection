@@ -1,0 +1,1 @@
+add_redir_dll (user_r user32 ../dllmain.c)

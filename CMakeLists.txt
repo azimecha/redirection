@@ -47,7 +47,7 @@ if (MSVC)
 	set (CMAKE_CXX_STANDARD_LIBRARIES "")
 	set (CMAKE_C_STANDARD_LIBRARIES "")
 	
-	add_link_options (/nodefaultlib /entry:EntryMSVC)
+	add_link_options (/nodefaultlib /entry:EntryMSVC /map)
 	add_compile_options (/wd28251 /MT /GS- /Oi-)
 	
 	add_definitions (
@@ -91,4 +91,5 @@ add_subdirectory (Shimmer)
 add_subdirectory (Interceptor)
 add_subdirectory (ProcessEntry)
 add_subdirectory (Kernel32)
+add_subdirectory (User32)
 add_subdirectory (AdvAPI32)

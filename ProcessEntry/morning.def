@@ -1,4 +1,4 @@
-LIBRARY "morning.dll"
+LIBRARY "morning.dll" BASE=0x6E200000
 EXPORTS
 NoRedirectImports
 ProcessEntryPoint=ProcessEntryPointThunk

@@ -342,3 +342,113 @@ void CbHeapFree(PVOID pBlock) {
 	if (s_pDefaultHeap && pBlock)
 		RtlFreeHeap(s_pDefaultHeap, 0, pBlock);
 }
+
+#include <stdio.h>
+
+static const WCHAR s_cwzErrorTitle[] = L"MagicWays Error";
+
+// careful, don't allocate heap memory or too much stack in this function
+// the error could be an out of memory or stack overflow!
+NTSTATUS CbDisplayError(DWORD nErrorCode, PEXCEPTION_POINTERS pex, LPCSTR pcszContext) {
+	static char szErrorBuf[4096];
+	static WCHAR wzErrorBuf[4096];
+	static char szModuleNameBuf[1024];
+	static CbSpinLock_t sl = CB_SPINLOCK_INITIAL;
+	PSTR pszBufCur;
+	int nCharsLeft, nPrinted;
+	NTSTATUS status;
+	ANSI_STRING asErrorMessage;
+	UNICODE_STRING usErrorMessage, usTitle;
+
+	pszBufCur = szErrorBuf;
+	nCharsLeft = sizeof(szErrorBuf) - 1;
+
+	CbAcquireSpinLock(&sl);
+	memset(szErrorBuf, 0, sizeof(szErrorBuf));
+
+	nPrinted = snprintf(pszBufCur, nCharsLeft, "Error 0x%08X while %s", nErrorCode, pcszContext);
+	pszBufCur += nPrinted; nCharsLeft -= nPrinted;
+
+	switch (nErrorCode) {
+	case EXCEPTION_ACCESS_VIOLATION:
+	case EXCEPTION_IN_PAGE_ERROR:
+		if (pex && pex->ExceptionRecord)
+			nPrinted = snprintf(pszBufCur, nCharsLeft, ": the memory at 0x%08X could not be %s.", pex->ExceptionRecord->ExceptionInformation[1],
+				pex->ExceptionRecord->ExceptionInformation[0] ? "written" : "read");
+		else
+			nPrinted = snprintf(pszBufCur, nCharsLeft, ": attempted to access invalid memory address.");
+		pszBufCur += nPrinted; nCharsLeft -= nPrinted;
+		break;
+
+	case EXCEPTION_STACK_OVERFLOW:
+		nPrinted = snprintf(pszBufCur, nCharsLeft, ": stack overflow.");
+		pszBufCur += nPrinted; nCharsLeft -= nPrinted;
+		break;
+
+	default:
+		if (nCharsLeft > 0) {
+			pszBufCur[0] = '.';
+			pszBufCur[1] = '\0';
+			pszBufCur++; nCharsLeft--;
+		}
+		break;
+	}
+
+	if (pex && pex->ContextRecord) {
+		nPrinted = snprintf(pszBufCur, nCharsLeft, "\r\nEIP = 0x%08X, ESP = 0x%08X, EBP = 0x%08X, ESI = 0x%08X, EDI = 0x%08X"
+			"\r\nEAX = 0x%08X, EBX = 0x%08X, ECX = 0x%08X, EDX = 0x%08X\r\n", pex->ContextRecord->Eip, pex->ContextRecord->Esp,
+			pex->ContextRecord->Ebp, pex->ContextRecord->Esi, pex->ContextRecord->Edi, pex->ContextRecord->Eax,
+			pex->ContextRecord->Ebx, pex->ContextRecord->Ecx, pex->ContextRecord->Edx);
+		pszBufCur += nPrinted; nCharsLeft -= nPrinted;
+
+		__try {
+			status = CbGetSectionName(CB_CURRENT_PROCESS, (LPVOID)pex->ContextRecord->Eip, szModuleNameBuf, sizeof(szModuleNameBuf));
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			status = GetExceptionCode();
+		}
+
+		if (CB_NT_FAILED(status))
+			nPrinted = snprintf(pszBufCur, nCharsLeft, "Instruction pointer was not in a valid module.");
+		else
+			nPrinted = snprintf(pszBufCur, nCharsLeft, "Faulting module: %s", szModuleNameBuf);
+		pszBufCur += nPrinted; nCharsLeft -= nPrinted;
+	} else {
+		nPrinted = snprintf(pszBufCur, nCharsLeft, "No CPU context information available.");
+		pszBufCur += nPrinted; nCharsLeft -= nPrinted;
+	}
+
+	asErrorMessage.Buffer = szErrorBuf;
+	asErrorMessage.Length = strlen(szErrorBuf);
+	asErrorMessage.MaximumLength = sizeof(szErrorBuf) - 1;
+
+	usErrorMessage.Buffer = wzErrorBuf;
+	usErrorMessage.Length = 0;
+	usErrorMessage.MaximumLength = sizeof(wzErrorBuf);
+
+	status = RtlAnsiStringToUnicodeString(&usErrorMessage, &asErrorMessage, FALSE);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[CbDisplayError] RtlAnsiStringToUnicodeString returned 0x%08X\r\n", status);
+		goto L_exit;
+	}
+
+	usTitle.Buffer = (PWSTR)s_cwzErrorTitle;
+	usTitle.Length = sizeof(s_cwzErrorTitle) - sizeof(WCHAR);
+	usTitle.MaximumLength = usTitle.Length;
+
+	status = CbDisplayMessageUni(&usTitle, &usErrorMessage, CbSeverityError);
+	if (CB_NT_FAILED(status))
+		DbgPrint("[CbDisplayError] CbDisplayMessageUni returned 0x%08X\r\n", status);
+
+L_exit:
+	CbReleaseSpinLock(&sl);
+	return status;
+}
+
+void __stdcall CbRtlUnwind(PVOID a, PVOID b, PEXCEPTION_RECORD c, PVOID d) {
+	static RtlUnwind_t procRtlUnwind = NULL;
+
+	if (procRtlUnwind == NULL)
+		procRtlUnwind = CbGetNTDLLFunction("RtlUnwind");
+
+	procRtlUnwind(a, b, c, d);
+}

@@ -1,4 +1,4 @@
-LIBRARY "ways.dll"
+LIBRARY "ways.dll" BASE=0x6E100000
 EXPORTS
 WaysDummy
 NoRedirectImports

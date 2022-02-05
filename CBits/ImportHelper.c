@@ -185,3 +185,15 @@ LPVOID CbGetImageEntryPoint(LPVOID pImageBase) {
 LPDWORD CbLastErrorAddress(void) {
 	return (LPDWORD)&CbGetTEB()->LastErrorValue;
 }
+
+void CbAcquireSpinLock(CbSpinLock_t* pLockVal) {
+	PVOID pThisThreadVal;
+	pThisThreadVal = (PVOID)CbGetTEB()->ClientId.UniqueThread;
+	while (InterlockedCompareExchangePointer(pLockVal, pThisThreadVal, 0) != 0);
+}
+
+void CbReleaseSpinLock(CbSpinLock_t* pLockVal) {
+	PVOID pThisThreadVal;
+	pThisThreadVal = (PVOID)CbGetTEB()->ClientId.UniqueThread;
+	InterlockedCompareExchangePointer(pLockVal, 0, pThisThreadVal);
+}

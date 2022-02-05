@@ -11,6 +11,9 @@
 #define CB_NTDLL_NO_FUNCS
 #include <NTDLL.h>
 
+// define to dump massive amounts of info to the debug console (will be slow if over serial)
+//#define PA_REWRITEIMPORTS_MASSDUMP
+
 typedef struct _struct_PaRewriteFuncs{
 	PaReadMemoryProc procReadMemory;
 	PaWriteMemoryProc procWriteMemory;
@@ -230,19 +233,24 @@ static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdirExports, DWORD nDirStar
 		// the function is forwarded if the RVA is inside the export directory
 		bIsForward = (pnFunctionAddrs[nFunction] >= nDirStartRVA) && (pnFunctionAddrs[nFunction] < (nDirStartRVA + nDirSize));
 
-		pfuncs->procDisplayInfo(pfuncs->pUserData, "Export %u: %s at RVA 0x%08X%s", nFunction, bIsForward ? "forward" : "code",
-			pnFunctionAddrs[nFunction], bIsForward ?  " -> " : "\r\n");
-
 		if (!bIsForward)
 			continue;
 
+#ifdef PA_REWRITEIMPORTS_MASSDUMP
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "Export %u: %s at RVA 0x%08X%s", nFunction, bIsForward ? "forward" : "code",
+			pnFunctionAddrs[nFunction], bIsForward ? " -> " : "\r\n");
+#endif
+
 		// get the forwarded name
 		pszForwardTarget = (LPSTR)((BYTE*)pdirExports + (pnFunctionAddrs[nFunction] - nDirStartRVA));
+
+#ifdef PA_REWRITEIMPORTS_MASSDUMP
 		pfuncs->procDisplayInfo(pfuncs->pUserData, "%s\r\n", pszForwardTarget);
+#endif
 
 		pszForwardFuncName = strchr(pszForwardTarget, '.');
 		if (pszForwardFuncName == NULL) {
-			pfuncs->procDisplayError(pfuncs->pUserData, "\tFormat is unrecoverable (no dot anywhere)\r\n");
+			pfuncs->procDisplayError(pfuncs->pUserData, "Format of \"%s\" is unrecoverable (no dot anywhere)\r\n", pszForwardTarget);
 			goto L_exit;
 		}
 
@@ -254,8 +262,14 @@ static BOOL s_FixBadForwards(PIMAGE_EXPORT_DIRECTORY pdirExports, DWORD nDirStar
 		memmove(pszForwardFuncName, pszForwardFuncName + sizeof(s_cszBadForwardPrefix) - 1, strlen(pszForwardFuncName) + 2
 			- sizeof(s_cszBadForwardPrefix));
 
+#ifdef PA_REWRITEIMPORTS_MASSDUMP
 		pfuncs->procDisplayInfo(pfuncs->pUserData, "\tReplaced with %s\r\n", pszForwardFuncName);
+#else
+		pfuncs->procDisplayInfo(pfuncs->pUserData, "Fixed previously bad forward %s\r\n", pszForwardFuncName);
+#endif
 	}
+
+	pfuncs->procDisplayInfo(pfuncs->pUserData, "%u exports checked\r\n", pdirExports->NumberOfFunctions);
 
 	// write updated export directory
 	if (!pfuncs->procWriteMemory(pdirExports, (BYTE*)xpImageBase + nDirStartRVA, nDirSize, pfuncs->pUserData)) {

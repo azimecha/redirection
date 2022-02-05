@@ -1,4 +1,4 @@
-LIBRARY "kernel_r.dll"
+LIBRARY "kernel_r.dll" BASE=0x6E300000
 EXPORTS
 ; Required
 NoRedirectImports

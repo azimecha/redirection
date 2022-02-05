@@ -66,7 +66,6 @@ BOOL ApplyLibraryLoadHooks(void) {
 	}
 
 	status = PaINIGetSection(s_hINI, "Exclude", s_mszExcludePaths, sizeof(s_mszExcludePaths));
-	PaINIClose(s_hINI);
 
 	if (status != 0) {
 		DbgPrint("[ApplyLibraryLoadHooks] Error 0x%08X reading exclude paths\r\n", status);
@@ -113,10 +112,18 @@ BOOL ApplyLibraryLoadHooks(void) {
 static NTSTATUS __stdcall s_InterceptedCreateSection(PHANDLE phSection, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib,
 	PLARGE_INTEGER pnMaxSize, ULONG nProtection, ULONG nAllocAttribs, HANDLE hFile)
 {
-	if (nAllocAttribs & SEC_IMAGE)
-		return s_InterceptedImageCreateSection(phSection, access, attrib, pnMaxSize, nProtection, nAllocAttribs, hFile);
+	NTSTATUS status;
 
-	return s_procRealCreateSection(phSection, access, attrib, pnMaxSize, nProtection, nAllocAttribs, hFile);
+	__try {
+		if (nAllocAttribs & SEC_IMAGE)
+			return s_InterceptedImageCreateSection(phSection, access, attrib, pnMaxSize, nProtection, nAllocAttribs, hFile);
+
+		status = s_procRealCreateSection(phSection, access, attrib, pnMaxSize, nProtection, nAllocAttribs, hFile);
+	} __except (CbDisplayError(GetExceptionCode(), GetExceptionInformation(), "creating section object"), EXCEPTION_EXECUTE_HANDLER) { // cursed
+		status = GetExceptionCode();
+	}
+
+	return status;
 }
 
 static NTSTATUS __stdcall s_InterceptedImageCreateSection(PHANDLE phSection, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib,
@@ -201,37 +208,42 @@ static NTSTATUS __stdcall s_InterceptedMapViewOfSection(HANDLE hSection, HANDLE 
 
 	DbgPrint("[InterceptedMapViewOfSection] Requested to map section 0x%08X in process 0x%08X\r\n", hSection, hProcess);
 
-	if (GetProcessId(hProcess) == GetCurrentProcessId()) {
-		status = NtQuerySection(hSection, SectionImageInformation, &infImageSection, sizeof(infImageSection), NULL);
-		if (status == 0)
-			return s_InterceptedImageMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset,
-				pnViewSize, nInheritDisposition, nAllocationType, nWin32Protection, &infImageSection);
-		else
-			dprintf("[InterceptedMapViewOfSection] NtQuerySection returned 0x%08X, assuming non-image section\r\n", status);
+	__try {
+		if (GetProcessId(hProcess) == GetCurrentProcessId()) {
+			status = NtQuerySection(hSection, SectionImageInformation, &infImageSection, sizeof(infImageSection), NULL);
+			if (status == 0)
+				return s_InterceptedImageMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset,
+					pnViewSize, nInheritDisposition, nAllocationType, nWin32Protection, &infImageSection);
+			else
+				dprintf("[InterceptedMapViewOfSection] NtQuerySection returned 0x%08X, assuming non-image section\r\n", status);
+		}
+
+		status = s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
+			nInheritDisposition, nAllocationType, nWin32Protection);
+	} __except (CbDisplayError(GetExceptionCode(), GetExceptionInformation(), "mapping view of section"), EXCEPTION_EXECUTE_HANDLER) { // cursed
+		status = GetExceptionCode();
 	}
 
-	return s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
-		nInheritDisposition, nAllocationType, nWin32Protection);
+	return status;
 }
 
 static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HANDLE hProcess, PVOID* ppBaseAddress,
 	ULONG_PTR nZeroBits, SIZE_T nCommitSize, PLARGE_INTEGER pnSectionOffset, PSIZE_T pnViewSize, DWORD nInheritDisposition,
 	ULONG nAllocationType, ULONG nWin32Protection, PSECTION_IMAGE_INFORMATION pinfImageSection)
 {
-	NTSTATUS status, statusAbort;
+	NTSTATUS status, statusRealCall, statusAbort;
 	RewriteDataBag_t data;
-	ULONG nResultSize;
 	LPSTR pszExcludePath;
 	int* pnNoRedirectMarker;
 	CHAR szNameAscBuffer[MAX_PATH + 1];
 
 	RtlSecureZeroMemory(&data, sizeof(data));
 
-	status = s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
+	statusRealCall = s_procRealMapViewOfSection(hSection, hProcess, ppBaseAddress, nZeroBits, nCommitSize, pnSectionOffset, pnViewSize,
 		nInheritDisposition, nAllocationType, nWin32Protection);
-	if (CB_NT_FAILED(status)) {
-		DbgPrint("[InterceptedMapViewOfSection] RealMapViewOfSection returned 0x%08X\r\n", status);
-		return status;
+	if (CB_NT_FAILED(statusRealCall)) {
+		DbgPrint("[InterceptedMapViewOfSection] RealMapViewOfSection returned 0x%08X\r\n", statusRealCall);
+		return statusRealCall;
 	}
 
 	DbgPrint("[InterceptedMapViewOfSection] Section mapped at 0x%08X\r\n", *ppBaseAddress);
@@ -266,7 +278,8 @@ static NTSTATUS __stdcall s_InterceptedImageMapViewOfSection(HANDLE hSection, HA
 		goto L_abort;
 	}
 
-	return 0;
+	// make sure to return this so caller can know that a rebase happened
+	return statusRealCall;
 
 L_abort:
 	statusAbort = NtUnmapViewOfSection(hProcess, *ppBaseAddress);
@@ -341,7 +354,6 @@ static BOOL s_AppendAndCheck(LPCSTR pcszName, LPSTR pszPathBuf, SIZE_T nPathBufS
 
 static BOOL s_MinimalFindDLL(LPCSTR pcszName, LPSTR pszPathBuf, SIZE_T nPathBufSize) {
 	NTSTATUS status;
-	SECTION_IMAGE_INFORMATION infSection;
 	LPSTR pszFileName;
 
 	// executable directory
@@ -367,7 +379,7 @@ static BOOL s_MinimalFindDLL(LPCSTR pcszName, LPSTR pszPathBuf, SIZE_T nPathBufS
 		if (strlen(ConfigFilePath) >= nPathBufSize) break;
 		strcpy(pszPathBuf, ConfigFilePath);
 
-		pszFileName = CbPathGetFilenameA(pszPathBuf);
+		pszFileName = (LPSTR)CbPathGetFilenameA(pszPathBuf);
 		if (pszFileName == NULL) break;
 		*pszFileName = 0;
 

@@ -39,11 +39,7 @@ BOOL PaFindConfigFileDirect(const char* pcszFileName, HANDLE hTargetProcess, cha
 	*pszFilenameStart = 0;
 
 	strcat(pszPathBuffer, pcszFileName);
-
-	hINIFile = CreateFileA(pszPathBuffer, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	CloseHandle(hINIFile);
-
-	return hINIFile != INVALID_HANDLE_VALUE;
+	return PaDoesFileExist(pszPathBuffer);
 }
 
 #define CB_CONFIGREADING_NTDEVICE "\\Device\\"
