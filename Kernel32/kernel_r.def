@@ -8,7 +8,13 @@ Dummy
 InitializeCriticalSectionEx=Impl_InitializeCriticalSectionEx
 LCMapStringEx=Impl_LCMapStringEx
 ExitProcess=TestExitProcess
-
+InitializeSRWLock=Impl_InitializeSRWLock
+AcquireSRWLockExclusive=Impl_AcquireSRWLockExclusive
+AcquireSRWLockShared=Impl_AcquireSRWLockShared
+ReleaseSRWLockExclusive=Impl_ReleaseSRWLockExclusive
+ReleaseSRWLockShared=Impl_ReleaseSRWLockShared
+TryAcquireSRWLockExclusive=Impl_TryAcquireSRWLockExclusive
+TryAcquireSRWLockShared=Impl_TryAcquireSRWLockShared
 
 ; Redirects
                           ActivateActCtx=KERNEL32.ActivateActCtx                           @1         

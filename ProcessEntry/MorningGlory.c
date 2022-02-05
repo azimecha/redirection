@@ -50,13 +50,13 @@ WCHAR MagicWaysPath[MAX_PATH + 1] = { 0 };
 WCHAR ConfigFilePath[MAX_PATH + 1] = { 0 };
 
 // PreInitThunk will set this to point to the actual NTDLL LdrInitializeThunk
-static LdrInitializeThunk_t procLdrInitializeThunk = NULL;
+static LdrInitializeThunk_t s_procLdrInitializeThunk = NULL;
 
 // this will be called instead of LdrInitializeThunk
 DECLSPEC_NORETURN DECLSPEC_NAKED void __stdcall ProcessInitThunk(LPVOID p1, LPVOID p2, LPVOID p3) {
     __asm {
         CALL s_PreInitThunk
-        PUSH DWORD PTR procLdrInitializeThunk
+        PUSH DWORD PTR s_procLdrInitializeThunk
         RET
     }
 }
@@ -70,14 +70,14 @@ void __stdcall s_PreInitThunk(void) {
 
     __try {
         // remove LdrInitializeThunk hook
-        procLdrInitializeThunk = CbGetNTDLLFunction("LdrInitializeThunk");
-        if (procLdrInitializeThunk == NULL) {
+        s_procLdrInitializeThunk = CbGetNTDLLFunction("LdrInitializeThunk");
+        if (s_procLdrInitializeThunk == NULL) {
             CbDisplayMessageW(L"Error", L"Unable to find LdrInitializeThunk in NTDLL.", CbSeverityError);
             s_Die();
         }
 
-        memcpy(procLdrInitializeThunk, InitThunkCode, sizeof(InitThunkCode));
-        status = NtFlushInstructionCache(MG_CURRENT_PROCESS, procLdrInitializeThunk, sizeof(InitThunkCode));
+        memcpy(s_procLdrInitializeThunk, InitThunkCode, sizeof(InitThunkCode));
+        status = NtFlushInstructionCache(MG_CURRENT_PROCESS, s_procLdrInitializeThunk, sizeof(InitThunkCode));
         if (status != 0)
             CbDisplayMessageW(L"Warning", L"Error flushing instruction cache (1).\r\nLdrInitializeThunk may not work.", CbSeverityWarning);
 
