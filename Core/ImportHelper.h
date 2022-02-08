@@ -37,6 +37,24 @@
 		return proc;														\
 	}
 
+#define CB_LOADONDEMAND_EXTERN_NOK32(d,r,c,f,...)							\
+	typedef r (c* CbOnDemandType ## f)(__VA_ARGS__);						\
+																			\
+	static CbOnDemandType ## f CbOnDemandRetrieve ## f(void) {				\
+		static CbOnDemandType ## f proc;									\
+		HANDLE hDLL;														\
+																			\
+		if (proc == NULL) {													\
+			hDLL = CbGetLoadedImageByName(d);								\
+			if (hDLL == NULL)												\
+				return NULL;												\
+																			\
+			proc = (CbOnDemandType ## f)CbGetSymbolAddress((LPVOID)hDLL, #f);\
+		}																	\
+																			\
+		return proc;														\
+	}
+
 #define CB_LOADONDEMAND_CALL(f, ...) (CbOnDemandRetrieve ## f () (__VA_ARGS__))
 
 // fb = fallback return value

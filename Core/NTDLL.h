@@ -97,6 +97,22 @@
 #define CB_NTSTATUS_SEVERITY(s) (((s) & 0xC0000000) >> 30)
 #define CB_NT_FAILED(s) (CB_NTSTATUS_SEVERITY(s) == STATUS_SEVERITY_ERROR)
 
+#ifndef WAIT_ABANDONED
+#define WAIT_ABANDONED 0x0080
+#endif
+
+#ifndef WAIT_OBJECT_0
+#define WAIT_OBJECT_0 0
+#endif
+
+#ifndef WAIT_TIMEOUT
+#define WAIT_TIMEOUT 0x0102
+#endif
+
+#ifndef WAIT_FAILED
+#define WAIT_FAILED (DWORD)0xFFFFFFFF
+#endif
+
 typedef DWORD NTSTATUS;
 typedef ULONG ACCESS_MASK;
 

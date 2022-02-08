@@ -1,14 +1,12 @@
-#include <PartialStdio.h>
+#include <NTDLL.h>
 
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0501
 #define _WIN32_WINNT 0x0501
-#include <Windows.h>
-#include <winternl.h>
+#include <minwindef.h>
 
-#define CB_NTDLL_NO_FUNCS
-#define CB_NTDLL_NO_TYPES
-#include <NTDLL.h>
+typedef NTSTATUS(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
+extern DbgPrint_t CbGetDebugPrintFunction(void);
 
 #define K32R_SRWLOCK_VAL_UNLOCKED ((PVOID)0)
 #define K32R_SRWLOCK_VAL_XLOCKED ((PVOID)~(UINT_PTR)0)
@@ -20,6 +18,7 @@ typedef struct _SRWLOCK {
 } SRWLOCK, *PSRWLOCK;
 
 BOOLEAN __stdcall Impl_TryAcquireSRWLockExclusive(PSRWLOCK plock);
+BOOLEAN __stdcall Impl_TryAcquireSRWLockShared(PSRWLOCK plock);
 
 typedef DWORD(__stdcall* NtYieldExecution_t)(void);
 
@@ -30,7 +29,7 @@ static void s_Yield(void) {
 		procYieldExecution = CbGetNTDLLFunction("NtYieldExecution");
 
 	if (procYieldExecution == NULL)
-		dprintf("[SRWLock:Yield] NtYieldExecution not found!");
+		CbGetDebugPrintFunction()("[SRWLock:Yield] NtYieldExecution not found!");
 	else
 		procYieldExecution();
 }

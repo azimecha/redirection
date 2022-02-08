@@ -4,6 +4,6 @@ file (GLOB ways_sources *.c)
 add_public_library (ways SHARED ${ways_headers} ${ways_sources} ways.def)
 
 target_link_libraries (ways PRIVATE
-	cbits patching
+	core patching
 	kernel32 psapi
 )

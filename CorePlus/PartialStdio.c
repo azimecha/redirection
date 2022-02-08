@@ -1,10 +1,7 @@
 #include "PartialStdio.h"
 #include "NTDLL.h"
-
-#define STB_SPRINTF_DECORATE(name) name
-#define STB_SPRINTF_IMPLEMENTATION
-#define STB_SPRINTF_NOFLOAT
-#include "stb_sprintf.h"
+#include "ImportHelper.h"
+#include <stb_sprintf.h>
 
 #include <stdio.h>
 #include <limits.h>
@@ -312,105 +309,4 @@ void dprintf(const char* pcszFormat, ...) {
 void vdprintf(const char* pcszFormat, va_list va) {
 	char szBuffer[STB_SPRINTF_MIN];
 	vsprintfcb(s_CallbackDebugPrint, szBuffer, szBuffer, pcszFormat, va);
-}
-
-int stricmp(const char* a, const char* b) {
-	return strnicmp(a, b, SIZE_MAX);
-}
-
-int strnicmp(const char* a, const char* b, size_t n) {
-	char ca, cb;
-
-	while (*a && *b && n) {
-		ca = tolower(*a);
-		cb = tolower(*b);
-		if (ca < cb) return -1;
-		if (ca > cb) return 1;
-
-		a++; b++; n--;
-	}
-
-	// at this point one (or both) is a null so we don't need to convert
-	if (n == 0)
-		return 0;
-	else if (*a < *b)
-		return -1;
-	else if (*a > *b)
-		return 1;
-	else
-		return 0;
-}
-
-int strccat(char* pszDest, size_t nDestBufSize, const char* pcszSrc) {
-	if (nDestBufSize == 0)
-		return pcszSrc[0] == '\0';
-
-	nDestBufSize--; // leave space for null
-
-	while (*pszDest && (nDestBufSize > 0)) {
-		pszDest++;
-		nDestBufSize--;
-	}
-
-	if (nDestBufSize == 0)
-		return pcszSrc[0] == '\0';
-
-	while (*pcszSrc && (nDestBufSize > 0)) {
-		*pszDest = *pcszSrc;
-		pszDest++;
-		pcszSrc++;
-		nDestBufSize--;
-	}
-
-	*pszDest = 0;
-	return *pcszSrc == 0;
-}
-
-size_t wcstombs(char* pszDest, const wchar_t* pwzSrc, size_t nMax) {
-	UNICODE_STRING usSrc;
-	ANSI_STRING asDest;
-
-	usSrc.Buffer = (LPWSTR)pwzSrc;
-	usSrc.Length = (USHORT)wcslen(pwzSrc);
-	usSrc.MaximumLength = usSrc.Length;
-
-	asDest.Buffer = pszDest;
-	asDest.Length = 0;
-	asDest.MaximumLength = (USHORT)(nMax - 1);
-
-	if (RtlUnicodeStringToAnsiString(&asDest, &usSrc, FALSE))
-		return (size_t)-1;
-
-	pszDest[asDest.Length] = 0;
-	return asDest.Length;
-}
-
-size_t mbstowcs(wchar_t* pwzDest, const char* pszSrc, size_t nMax) {
-	UNICODE_STRING usDest;
-	ANSI_STRING asSrc;
-
-	asSrc.Buffer = (LPSTR)pszSrc;
-	asSrc.Length = (USHORT)strlen(pszSrc);
-	asSrc.MaximumLength = asSrc.Length;
-
-	usDest.Buffer = pwzDest;
-	usDest.Length = 0;
-	usDest.MaximumLength = (USHORT)(nMax - 1);
-
-	if (RtlAnsiStringToUnicodeString(&usDest, &asSrc, FALSE))
-		return (size_t)-1;
-
-	pwzDest[usDest.Length / 2] = 0;
-	return usDest.Length / 2;
-}
-
-size_t wcslen(const wchar_t* pcwzString) {
-	size_t nLength = 0;
-
-	while (*pcwzString) {
-		nLength++;
-		pcwzString++;
-	}
-
-	return nLength;
 }

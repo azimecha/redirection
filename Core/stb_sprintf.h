@@ -29,6 +29,9 @@
 #ifndef STB_SPRINTF_H_INCLUDE
 #define STB_SPRINTF_H_INCLUDE
 
+#define STB_SPRINTF_DECORATE(name) name
+#define STB_SPRINTF_NOFLOAT
+
 /*
 Single file sprintf replacement.
 

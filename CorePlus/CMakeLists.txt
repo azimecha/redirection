@@ -1,0 +1,5 @@
+file (GLOB_RECURSE coreplus_headers *.h)
+file (GLOB_RECURSE coreplus_sources *.c)
+add_library (coreplus STATIC ${coreplus_headers} ${coreplus_sources})
+target_include_directories (coreplus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries (coreplus PUBLIC core)

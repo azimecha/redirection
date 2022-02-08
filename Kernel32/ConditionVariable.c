@@ -1,21 +1,51 @@
-#include <NTDLL.h>
 #include <ImportHelper.h>
-#include <stddef.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+#ifndef STATUS_UNSUCCESSFUL
+#define STATUS_UNSUCCESSFUL 0xC0000001
+#endif
 
 struct SDL_cond;
 typedef struct SDL_cond SDL_cond;
-typedef void SDL_mutex;
+
+typedef struct _SDL_mutex {
+    int (* procLock)(PVOID pObject);
+    int (* procUnlock)(PVOID pObject);
+    PVOID pObject;
+} SDL_mutex;
+
 typedef void SDL_sem;
 typedef DWORD Uint32;
 #define SDL_MUTEX_MAXWAIT (~(DWORD)0)
+#define SDL_MUTEX_TIMEDOUT 1
+#define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT 0x102
+#define WAIT_ABANDONED 0x80
+
+typedef DWORD(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
+extern DbgPrint_t CbGetDebugPrintFunction(void);
+extern PVOID CbHeapAllocate(SIZE_T nBytes, BOOL bZeroInit);
+extern void CbHeapFree(PVOID pBlock);
 
 CB_UNDECORATED_EXTERN(HANDLE, CreateMutexA, PVOID pAttribs, BOOL bInitOwned, LPCSTR pcszName);
 CB_UNDECORATED_EXTERN(HANDLE, CreateSemaphoreA, PVOID pAttribs, LONG nInitCount, LONG nMaxCount, LPCSTR pcszName);
 CB_UNDECORATED_EXTERN(void, RaiseException, DWORD nCode, DWORD flags, DWORD nArgs, const uintptr_t* pArgs);
 CB_UNDECORATED_EXTERN(BOOL, CloseHandle, HANDLE h);
+CB_UNDECORATED_EXTERN(DWORD, WaitForSingleObject, HANDLE hObject, DWORD nMillis);
+CB_UNDECORATED_EXTERN(BOOL, ReleaseMutex, HANDLE hMutex);
+CB_UNDECORATED_EXTERN(BOOL, ReleaseSemaphore, HANDLE hSemaphore, LONG nRelCount, OPTIONAL LPLONG pnPrevCount);
 
 static SDL_mutex* SDL_CreateMutex(void) {
-    return (SDL_mutex*)CB_UNDECORATED_CALL(CreateMutexA, NULL, FALSE, NULL);
+    SDL_mutex* pMutex;
+
+    pMutex = CbHeapAllocate(sizeof(SDL_mutex), TRUE);
+    if (pMutex == NULL) return pMutex;
+
+    // TODO
+
+    //return (SDL_mutex*)CB_UNDECORATED_CALL(CreateMutexA, NULL, FALSE, NULL);
 }
 
 static SDL_sem* SDL_CreateSemaphore(Uint32 nInitVal) {
@@ -34,14 +64,54 @@ static void SDL_DestroyMutex(SDL_mutex* pMutex) {
     CB_UNDECORATED_CALL(CloseHandle, (HANDLE)pMutex);
 }
 
+static void* SDL_malloc(size_t nBytes) {
+    return CbHeapAllocate(nBytes, FALSE);
+}
+
 static void SDL_free(void* pBlock) {
     CbHeapFree(pBlock);
 }
 
 static int SDL_SetError(const char* pcszError) {
-    DbgPrint("[ConditionVariable] SDL error: %s\r\n", pcszError);
+    CbGetDebugPrintFunction()("[ConditionVariable] SDL error: %s\r\n", pcszError);
     return -1;
 }
+
+static int s_WrappedWaitForObject(HANDLE hObject, DWORD nTimeout) {
+    switch (CB_UNDECORATED_CALL(WaitForSingleObject, hObject, nTimeout)) {
+    case WAIT_OBJECT_0:
+    case WAIT_ABANDONED:
+        return 0;
+
+    case WAIT_TIMEOUT:
+        return SDL_MUTEX_TIMEDOUT;
+
+    default:
+        return -1;
+    }
+}
+
+static int SDL_LockMutex(SDL_mutex* pMutex) {
+    return s_WrappedWaitForObject((HANDLE)pMutex, SDL_MUTEX_MAXWAIT);
+}
+
+static int SDL_UnlockMutex(SDL_mutex* pMutex) {
+    return CB_UNDECORATED_CALL(ReleaseMutex, (HANDLE)pMutex) ? 0 : -1;
+}
+
+static int SDL_SemPost(SDL_sem* pSem) {
+    return CB_UNDECORATED_CALL(ReleaseSemaphore, (HANDLE)pSem, 1, NULL) ? 0 : -1;
+}
+
+static int SDL_SemWait(SDL_sem* pSem) {
+    return s_WrappedWaitForObject((HANDLE)pSem, SDL_MUTEX_MAXWAIT);
+}
+
+static int SDL_SemWaitTimeout(SDL_sem* pSem, Uint32 nMillis) {
+    return s_WrappedWaitForObject((HANDLE)pSem, nMillis);
+}
+
+////////////////////////////// BEGIN SDL CODE //////////////////////////////
 
 /*
   Simple DirectMedia Layer
@@ -91,6 +161,13 @@ typedef struct SDL_cond_generic
     SDL_sem* wait_sem;
     SDL_sem* wait_done;
 } SDL_cond_generic;
+
+SDL_cond* SDL_CreateCond_generic(void);
+void SDL_DestroyCond_generic(SDL_cond* _cond);
+int SDL_CondSignal_generic(SDL_cond* _cond);
+int SDL_CondBroadcast_generic(SDL_cond* _cond);
+int SDL_CondWaitTimeout_generic(SDL_cond* _cond, SDL_mutex* mutex, Uint32 ms);
+int SDL_CondWait_generic(SDL_cond* cond, SDL_mutex* mutex);
 
 /* Create a condition variable */
 SDL_cond*
@@ -281,3 +358,15 @@ SDL_CondWait_generic(SDL_cond* cond, SDL_mutex* mutex)
 }
 
 /* vi: set ts=4 sw=4 expandtab: */
+
+////////////////////////////// END SDL CODE //////////////////////////////
+
+typedef SDL_cond** PCONDITION_VARIABLE;
+
+void __stdcall InitializeConditionVariable(PCONDITION_VARIABLE pcond) {
+    *pcond = SDL_CreateCond();
+    if (*pcond == NULL)
+        CB_UNDECORATED_CALL(RaiseException, STATUS_UNSUCCESSFUL, 0, 0, NULL);
+}
+
+BOOL __stdcall SleepConditionVariableCS()

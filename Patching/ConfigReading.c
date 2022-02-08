@@ -2,7 +2,6 @@
 #include "FilePaths.h"
 #include "ImportHelper.h"
 #include <NTDLL.h>
-#include <PartialStdio.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
