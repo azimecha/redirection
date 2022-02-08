@@ -1,4 +1,5 @@
 #include <ImportHelper.h>
+#include <inttypes.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -11,7 +12,7 @@ struct SDL_cond;
 typedef struct SDL_cond SDL_cond;
 
 typedef struct _SDL_mutex {
-    int (* procLock)(PVOID pObject);
+    int (* procLock)(PVOID pObject, DWORD nTimeout);
     int (* procUnlock)(PVOID pObject);
     PVOID pObject;
 } SDL_mutex;
@@ -28,8 +29,13 @@ typedef DWORD(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
 extern DbgPrint_t CbGetDebugPrintFunction(void);
 extern PVOID CbHeapAllocate(SIZE_T nBytes, BOOL bZeroInit);
 extern void CbHeapFree(PVOID pBlock);
+extern BOOLEAN __stdcall Impl_TryAcquireSRWLockExclusive(PVOID plock);
+extern BOOLEAN __stdcall Impl_TryAcquireSRWLockShared(PVOID plock);
+extern void SRWYield(void);
+extern void __stdcall Impl_ReleaseSRWLockExclusive(PSRWLOCK plock);
+extern void __stdcall Impl_ReleaseSRWLockShared(PSRWLOCK plock);
 
-CB_UNDECORATED_EXTERN(HANDLE, CreateMutexA, PVOID pAttribs, BOOL bInitOwned, LPCSTR pcszName);
++CB_UNDECORATED_EXTERN(HANDLE, CreateMutexA, PVOID pAttribs, BOOL bInitOwned, LPCSTR pcszName);
 CB_UNDECORATED_EXTERN(HANDLE, CreateSemaphoreA, PVOID pAttribs, LONG nInitCount, LONG nMaxCount, LPCSTR pcszName);
 CB_UNDECORATED_EXTERN(void, RaiseException, DWORD nCode, DWORD flags, DWORD nArgs, const uintptr_t* pArgs);
 CB_UNDECORATED_EXTERN(BOOL, CloseHandle, HANDLE h);
@@ -37,15 +43,33 @@ CB_UNDECORATED_EXTERN(DWORD, WaitForSingleObject, HANDLE hObject, DWORD nMillis)
 CB_UNDECORATED_EXTERN(BOOL, ReleaseMutex, HANDLE hMutex);
 CB_UNDECORATED_EXTERN(BOOL, ReleaseSemaphore, HANDLE hSemaphore, LONG nRelCount, OPTIONAL LPLONG pnPrevCount);
 
+static int s_LockSystemMutex(PVOID pObject, DWORD nTimeout);
+static int s_UnlockSystemMutex(PVOID pObject);
+static int s_WrappedWaitForObject(HANDLE hObject, DWORD nTimeout);
+static int s_LockCriticalSection(PVOID pObject, DWORD nTimeout);
+static int s_UnlockCriticalSection(PVOID pObject);
+static int s_LockSRWLock(PVOID pObject, DWORD nTimeout, BOOLEAN (__stdcall* procTryLock)(PVOID pObject));
+static int s_LockSRWLockExclusive(PVOID pObject, DWORD nTimeout);
+static int s_LockSRWLockShared(PVOID pObject, DWORD nTimeout);
+static int s_UnlockSRWLockExclusive(PVOID pObject);
+static int s_UnlockSRWLockShared(PVOID pObject);
+static BOOL s_WrappedCondWaitTimeout(PCONDITION_VARIABLE pcond, SDL_mutex* pMutex, DWORD nMillis);
+
 static SDL_mutex* SDL_CreateMutex(void) {
     SDL_mutex* pMutex;
 
     pMutex = CbHeapAllocate(sizeof(SDL_mutex), TRUE);
     if (pMutex == NULL) return pMutex;
 
-    // TODO
+    pMutex->procLock = s_LockSystemMutex;
+    pMutex->procUnlock = s_UnlockSystemMutex;
+    pMutex->pObject = (PVOID)CB_UNDECORATED_CALL(CreateMutexA, NULL, FALSE, NULL);
+    if (pMutex->pObject == NULL) {
+        CbHeapFree(pMutex);
+        return NULL;
+    }
 
-    //return (SDL_mutex*)CB_UNDECORATED_CALL(CreateMutexA, NULL, FALSE, NULL);
+    return pMutex;
 }
 
 static SDL_sem* SDL_CreateSemaphore(Uint32 nInitVal) {
@@ -77,6 +101,26 @@ static int SDL_SetError(const char* pcszError) {
     return -1;
 }
 
+static int SDL_LockMutex(SDL_mutex* pMutex) {
+    return pMutex->procLock(pMutex->pObject, SDL_MUTEX_MAXWAIT);
+}
+
+static int SDL_UnlockMutex(SDL_mutex* pMutex) {
+    return pMutex->procUnlock(pMutex->pObject);
+}
+
+static int SDL_SemPost(SDL_sem* pSem) {
+    return CB_UNDECORATED_CALL(ReleaseSemaphore, (HANDLE)pSem, 1, NULL) ? 0 : -1;
+}
+
+static int SDL_SemWait(SDL_sem* pSem) {
+    return s_WrappedWaitForObject((HANDLE)pSem, SDL_MUTEX_MAXWAIT);
+}
+
+static int SDL_SemWaitTimeout(SDL_sem* pSem, Uint32 nMillis) {
+    return s_WrappedWaitForObject((HANDLE)pSem, nMillis);
+}
+
 static int s_WrappedWaitForObject(HANDLE hObject, DWORD nTimeout) {
     switch (CB_UNDECORATED_CALL(WaitForSingleObject, hObject, nTimeout)) {
     case WAIT_OBJECT_0:
@@ -91,24 +135,63 @@ static int s_WrappedWaitForObject(HANDLE hObject, DWORD nTimeout) {
     }
 }
 
-static int SDL_LockMutex(SDL_mutex* pMutex) {
-    return s_WrappedWaitForObject((HANDLE)pMutex, SDL_MUTEX_MAXWAIT);
+static int s_LockSystemMutex(PVOID pMutex, DWORD nTimeout) {
+    return s_WrappedWaitForObject((HANDLE)pMutex, nTimeout);
 }
 
-static int SDL_UnlockMutex(SDL_mutex* pMutex) {
-    return CB_UNDECORATED_CALL(ReleaseMutex, (HANDLE)pMutex) ? 0 : -1;
+static int s_UnlockSystemMutex(PVOID pObject) {
+    return CB_UNDECORATED_CALL(ReleaseMutex, (HANDLE)pObject) ? 0 : -1;
 }
 
-static int SDL_SemPost(SDL_sem* pSem) {
-    return CB_UNDECORATED_CALL(ReleaseSemaphore, (HANDLE)pSem, 1, NULL) ? 0 : -1;
+static int s_LockCriticalSection(PVOID pObject, DWORD nTimeout) {
+    __try {
+        EnterCriticalSection((PCRITICAL_SECTION)pObject);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+
+    return 0;
 }
 
-static int SDL_SemWait(SDL_sem* pSem) {
-    return s_WrappedWaitForObject((HANDLE)pSem, SDL_MUTEX_MAXWAIT);
+static int s_UnlockCriticalSection(PVOID pObject) {
+    __try {
+        LeaveCriticalSection((PCRITICAL_SECTION)pObject);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+
+    return 0;
 }
 
-static int SDL_SemWaitTimeout(SDL_sem* pSem, Uint32 nMillis) {
-    return s_WrappedWaitForObject((HANDLE)pSem, nMillis);
+static int s_LockSRWLock(PVOID pObject, DWORD nTimeout, BOOLEAN (__stdcall* procTryLock)(PVOID pObject)) {
+    uint64_t nEndTime;
+
+    nEndTime = (uint64_t)GetTickCount() + nTimeout;
+    do {
+        if (procTryLock(pObject))
+            return 0;
+        SRWYield();
+    } while (GetTickCount() < nEndTime);
+
+    return SDL_MUTEX_TIMEDOUT;
+}
+
+static int s_LockSRWLockExclusive(PVOID pObject, DWORD nTimeout) {
+    return s_LockSRWLock(pObject, nTimeout, Impl_TryAcquireSRWLockExclusive);
+}
+
+static int s_LockSRWLockShared(PVOID pObject, DWORD nTimeout) {
+    return s_LockSRWLock(pObject, nTimeout, Impl_TryAcquireSRWLockShared);
+}
+
+static int s_UnlockSRWLockExclusive(PVOID pObject) {
+    Impl_ReleaseSRWLockExclusive(pObject);
+    return 0;
+}
+
+static int s_UnlockSRWLockShared(PVOID pObject) {
+    Impl_ReleaseSRWLockShared(pObject);
+    return 0;
 }
 
 ////////////////////////////// BEGIN SDL CODE //////////////////////////////
@@ -363,10 +446,48 @@ SDL_CondWait_generic(SDL_cond* cond, SDL_mutex* mutex)
 
 typedef SDL_cond** PCONDITION_VARIABLE;
 
-void __stdcall InitializeConditionVariable(PCONDITION_VARIABLE pcond) {
+void __stdcall Impl_InitializeConditionVariable(PCONDITION_VARIABLE pcond) {
     *pcond = SDL_CreateCond();
     if (*pcond == NULL)
         CB_UNDECORATED_CALL(RaiseException, STATUS_UNSUCCESSFUL, 0, 0, NULL);
 }
 
-BOOL __stdcall SleepConditionVariableCS()
+static BOOL s_WrappedCondWaitTimeout(PCONDITION_VARIABLE pcond, SDL_mutex* pMutex, DWORD nMillis) {
+    switch (SDL_CondWaitTimeout(*pcond, pMutex, (Uint32)nMillis)) {
+    case 0:
+        return TRUE;
+
+    case SDL_MUTEX_TIMEDOUT:
+        CbLastWinAPIError = ERROR_TIMEOUT;
+        return FALSE;
+
+    default:
+        return FALSE;
+    }
+}
+
+BOOL __stdcall Impl_SleepConditionVariableCS(PCONDITION_VARIABLE pcond, PCRITICAL_SECTION pcs, DWORD nMillis) {
+    SDL_mutex mtx;
+    mtx.procLock = s_LockCriticalSection;
+    mtx.procUnlock = s_UnlockCriticalSection;
+    mtx.pObject = pcs;
+
+    return s_WrappedCondWaitTimeout(pcond, &mtx, nMillis);
+}
+
+BOOL __stdcall Impl_SleepConditionVariableSRW(PCONDITION_VARIABLE pcond, PSRWLOCK pLock, DWORD nMillis, ULONG flags) {
+    SDL_mutex mtx;
+    mtx.procLock = (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) ? s_LockSRWLockShared : s_LockSRWLockExclusive;
+    mtx.procUnlock = (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) ? s_UnlockSRWLockShared : s_UnlockSRWLockExclusive;
+    mtx.pObject = pLock;
+
+    return s_WrappedCondWaitTimeout(pcond, &mtx, nMillis);
+}
+
+void __stdcall Impl_WakeAllConditionVariable(PCONDITION_VARIABLE pcond) {
+    SDL_CondBroadcast(*pcond);
+}
+
+void __stdcall Impl_WakeConditionVariable(PCONDITION_VARIABLE pcond) {
+    SDL_CondSignal(*pcond);
+}

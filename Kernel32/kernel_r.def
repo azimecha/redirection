@@ -8,13 +8,18 @@ Dummy
 InitializeCriticalSectionEx=Impl_InitializeCriticalSectionEx
 LCMapStringEx=Impl_LCMapStringEx
 ExitProcess=TestExitProcess
-;InitializeSRWLock=Impl_InitializeSRWLock
-;AcquireSRWLockExclusive=Impl_AcquireSRWLockExclusive
-;AcquireSRWLockShared=Impl_AcquireSRWLockShared
-;ReleaseSRWLockExclusive=Impl_ReleaseSRWLockExclusive
-;ReleaseSRWLockShared=Impl_ReleaseSRWLockShared
-;TryAcquireSRWLockExclusive=Impl_TryAcquireSRWLockExclusive
-;TryAcquireSRWLockShared=Impl_TryAcquireSRWLockShared
+InitializeSRWLock=Impl_InitializeSRWLock
+AcquireSRWLockExclusive=Impl_AcquireSRWLockExclusive
+AcquireSRWLockShared=Impl_AcquireSRWLockShared
+ReleaseSRWLockExclusive=Impl_ReleaseSRWLockExclusive
+ReleaseSRWLockShared=Impl_ReleaseSRWLockShared
+TryAcquireSRWLockExclusive=Impl_TryAcquireSRWLockExclusive
+TryAcquireSRWLockShared=Impl_TryAcquireSRWLockShared
+InitializeConditionVariable=Impl_InitializeConditionVariable
+SleepConditionVariableCS=Impl_SleepConditionVariableCS
+SleepConditionVariableSRW=Impl_SleepConditionVariableSRW
+WakeAllConditionVariable=Impl_WakeAllConditionVariable
+WakeConditionVariable=Impl_WakeConditionVariable
 
 ; Redirects
                           ActivateActCtx=KERNEL32.ActivateActCtx                           @1         

@@ -22,7 +22,7 @@ BOOLEAN __stdcall Impl_TryAcquireSRWLockShared(PSRWLOCK plock);
 
 typedef DWORD(__stdcall* NtYieldExecution_t)(void);
 
-static void s_Yield(void) {
+void SRWYield(void) {
 	static NtYieldExecution_t procYieldExecution = NULL;
 
 	if (procYieldExecution == NULL)
