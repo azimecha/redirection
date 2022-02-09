@@ -74,6 +74,7 @@ CB_NTDLL_DEFINE(NtCreateSection, (PHANDLE a, ULONG b, OPTIONAL POBJECT_ATTRIBUTE
 CB_NTDLL_DEFINE(NtClose, (HANDLE a), (a));
 CB_NTDLL_DEFINE(NtAllocateVirtualMemory, (HANDLE a, OUT PVOID* b, ULONG c, OUT PULONG d, ULONG e, ULONG f), (a, b, c, d, e, f));
 CB_NTDLL_DEFINE(NtFreeVirtualMemory, (HANDLE a, PVOID* b, IN OUT PULONG c, ULONG d), (a, b, c, d));
+CB_NTDLL_DEFINE(NtQuerySystemTime, (PLARGE_INTEGER a), (a));
 
 CB_NTDLL_DEFINE_ALT(PVOID, RtlCreateHeap, (ULONG a, OPTIONAL PVOID b, OPTIONAL SIZE_T c, OPTIONAL SIZE_T d, OPTIONAL PVOID e,
 	OPTIONAL PVOID f), (a, b, c, d, e, f));

@@ -20,6 +20,19 @@ SleepConditionVariableCS=Impl_SleepConditionVariableCS
 SleepConditionVariableSRW=Impl_SleepConditionVariableSRW
 WakeAllConditionVariable=Impl_WakeAllConditionVariable
 WakeConditionVariable=Impl_WakeConditionVariable
+GetTickCount64=Impl_GetTickCount64
+SetThreadStackGuarantee=Impl_SetThreadStackGuarantee
+GetCurrentProcessorNumber=Impl_GetCurrentProcessorNumber
+GetCurrentProcessorNumberEx=Impl_GetCurrentProcessorNumberEx
+GetThreadIdealProcessorEx=Impl_GetThreadIdealProcessorEx
+SetThreadIdealProcessor=Impl_SetThreadIdealProcessor
+SetThreadIdealProcessorEx=Impl_SetThreadIdealProcessorEx
+GetEnabledXStateFeatures=Impl_GetEnabledXStateFeatures
+SetXStateFeaturesMask=Impl_SetXStateFeaturesMask
+GetActiveProcessorGroupCount=Impl_GetActiveProcessorGroupCount
+GetLargePageMinimum=Impl_GetLargePageMinimum
+GetNumaProcessorNodeEx=Impl_GetNumaProcessorNodeEx
+VirtualAllocExNuma=Impl_VirtualAllocExNuma
 
 ; Redirects
                           ActivateActCtx=KERNEL32.ActivateActCtx                           @1         

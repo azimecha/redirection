@@ -431,7 +431,7 @@ typedef struct _TEB {
 	BYTE  Reserved3[1952];
 	PVOID TlsSlots[64];
 	BYTE  Reserved4[8];
-	PVOID Reserved5[26];
+	PVOID Reserved5a[26];
 	PVOID ReservedForOle;
 	PVOID Reserved6[4];
 	PVOID TlsExpansionSlots;
@@ -439,6 +439,7 @@ typedef struct _TEB {
 
 C_ASSERT(FIELD_OFFSET(TEB, ProcessEnvironmentBlock) == 0x30);
 C_ASSERT(FIELD_OFFSET(TEB, TlsSlots) == 0x0E10);
+C_ASSERT(FIELD_OFFSET(TEB, TlsExpansionSlots) == 0x0F94);
 
 typedef struct _LDR_DATA_TABLE_ENTRY {
 	PVOID Reserved1[2];
@@ -550,6 +551,57 @@ typedef enum _RTL_PATH_TYPE {
 	RtlPathTypeRootLocalDevice
 } RTL_PATH_TYPE;
 
+// https://jgrunzweig.github.io/posts/2014/12/unique-technique-for-iterating-through-processes/
+typedef struct _SYSTEM_THREADS {
+	LARGE_INTEGER  KernelTime;
+	LARGE_INTEGER  UserTime;
+	LARGE_INTEGER  CreateTime;
+	ULONG          WaitTime;
+	PVOID          StartAddress;
+	CLIENT_ID      ClientId;
+	KPRIORITY      Priority;
+	KPRIORITY      BasePriority;
+	ULONG          ContextSwitchCount;
+	LONG           State;
+	LONG           WaitReason;
+} SYSTEM_THREADS, * PSYSTEM_THREADS;
+
+typedef struct _VM_COUNTERS {
+	SIZE_T             PeakVirtualSize;
+	SIZE_T             VirtualSize;
+	ULONG              PageFaultCount;
+	SIZE_T             PeakWorkingSetSize;
+	SIZE_T             WorkingSetSize;
+	SIZE_T             QuotaPeakPagedPoolUsage;
+	SIZE_T             QuotaPagedPoolUsage;
+	SIZE_T             QuotaPeakNonPagedPoolUsage;
+	SIZE_T             QuotaNonPagedPoolUsage;
+	SIZE_T             PagefileUsage;
+	SIZE_T             PeakPagefileUsage;
+} VM_COUNTERS;
+
+typedef struct _SYSTEM_PROCESSES {
+	ULONG              NextEntryDelta;
+	ULONG              ThreadCount;
+	ULONG              Reserved1[6];
+	LARGE_INTEGER      CreateTime;
+	LARGE_INTEGER      UserTime;
+	LARGE_INTEGER      KernelTime;
+	UNICODE_STRING     ProcessName;
+	KPRIORITY          BasePriority;
+	ULONG              ProcessId;
+	ULONG              InheritedFromProcessId;
+	ULONG              HandleCount;
+	ULONG              Reserved2[2];
+	VM_COUNTERS        VmCounters;
+	IO_COUNTERS        IoCounters;
+	SYSTEM_THREADS     Threads[1];
+} SYSTEM_PROCESSES, * PSYSTEM_PROCESSES;
+
+typedef enum _SYSTEM_INFORMATION_CLASS {
+	SystemProcessAndThreadInformation = 5
+} SYSTEM_INFORMATION_CLASS;
+
 typedef NTSTATUS(__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize,
 	PULONG pnResultSize);
 
@@ -623,6 +675,12 @@ NTSTATUS __stdcall NtCreateSection(PHANDLE phSection, ULONG nAccess, OPTIONAL PO
 NTSTATUS __stdcall NtClose(HANDLE hObject);
 NTSTATUS __stdcall NtAllocateVirtualMemory(HANDLE hProcess, IN OUT PVOID* ppBase, ULONG nZeroBits, IN OUT PULONG pnSize, ULONG nType, ULONG nProtection);
 NTSTATUS __stdcall NtFreeVirtualMemory(HANDLE hProcess, PVOID* ppBase, IN OUT PULONG pnSize, ULONG nFreeType);
+NTSTATUS __stdcall NtQuerySystemTime(PLARGE_INTEGER pliSystemTime);
+NTSTATUS __stdcall NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS iclass, PVOID pBuffer, ULONG nBufSize, PULONG pnValueSize);
+NTSTATUS __stdcall NtGetContextThread(HANDLE hThread, PCONTEXT pctx);
+NTSTATUS __stdcall NtSuspendThread(HANDLE hThread, OUT OPTIONAL PULONG pnPrevSusCount);
+NTSTATUS __stdcall NtResumeThread(HANDLE hThread, OUT OPTIONAL PULONG pnRemainingSusCount);
+NTSTATUS __stdcall NtOpenThread(OUT PHANDLE pHThread, ACCESS_MASK maskAccess, POBJECT_ATTRIBUTES pAttribs, CLIENT_ID* pThreadID);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);

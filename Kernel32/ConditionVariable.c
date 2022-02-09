@@ -2,7 +2,7 @@
 #include <inttypes.h>
 
 #define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#include <minwinbase.h>
 
 #ifndef STATUS_UNSUCCESSFUL
 #define STATUS_UNSUCCESSFUL 0xC0000001
@@ -19,11 +19,15 @@ typedef struct _SDL_mutex {
 
 typedef void SDL_sem;
 typedef DWORD Uint32;
+typedef SDL_cond** PCONDITION_VARIABLE;
+
 #define SDL_MUTEX_MAXWAIT (~(DWORD)0)
 #define SDL_MUTEX_TIMEDOUT 1
 #define WAIT_OBJECT_0 0
 #define WAIT_TIMEOUT 0x102
 #define WAIT_ABANDONED 0x80
+#define CONDITION_VARIABLE_LOCKMODE_SHARED 1
+#define ERROR_TIMEOUT WAIT_TIMEOUT
 
 typedef DWORD(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
 extern DbgPrint_t CbGetDebugPrintFunction(void);
@@ -32,10 +36,10 @@ extern void CbHeapFree(PVOID pBlock);
 extern BOOLEAN __stdcall Impl_TryAcquireSRWLockExclusive(PVOID plock);
 extern BOOLEAN __stdcall Impl_TryAcquireSRWLockShared(PVOID plock);
 extern void SRWYield(void);
-extern void __stdcall Impl_ReleaseSRWLockExclusive(PSRWLOCK plock);
-extern void __stdcall Impl_ReleaseSRWLockShared(PSRWLOCK plock);
+extern void __stdcall Impl_ReleaseSRWLockExclusive(PVOID plock);
+extern void __stdcall Impl_ReleaseSRWLockShared(PVOID plock);
 
-+CB_UNDECORATED_EXTERN(HANDLE, CreateMutexA, PVOID pAttribs, BOOL bInitOwned, LPCSTR pcszName);
+CB_UNDECORATED_EXTERN(HANDLE, CreateMutexA, PVOID pAttribs, BOOL bInitOwned, LPCSTR pcszName);
 CB_UNDECORATED_EXTERN(HANDLE, CreateSemaphoreA, PVOID pAttribs, LONG nInitCount, LONG nMaxCount, LPCSTR pcszName);
 CB_UNDECORATED_EXTERN(void, RaiseException, DWORD nCode, DWORD flags, DWORD nArgs, const uintptr_t* pArgs);
 CB_UNDECORATED_EXTERN(BOOL, CloseHandle, HANDLE h);
@@ -444,8 +448,6 @@ SDL_CondWait_generic(SDL_cond* cond, SDL_mutex* mutex)
 
 ////////////////////////////// END SDL CODE //////////////////////////////
 
-typedef SDL_cond** PCONDITION_VARIABLE;
-
 void __stdcall Impl_InitializeConditionVariable(PCONDITION_VARIABLE pcond) {
     *pcond = SDL_CreateCond();
     if (*pcond == NULL)
@@ -475,7 +477,7 @@ BOOL __stdcall Impl_SleepConditionVariableCS(PCONDITION_VARIABLE pcond, PCRITICA
     return s_WrappedCondWaitTimeout(pcond, &mtx, nMillis);
 }
 
-BOOL __stdcall Impl_SleepConditionVariableSRW(PCONDITION_VARIABLE pcond, PSRWLOCK pLock, DWORD nMillis, ULONG flags) {
+BOOL __stdcall Impl_SleepConditionVariableSRW(PCONDITION_VARIABLE pcond, PVOID pLock, DWORD nMillis, ULONG flags) {
     SDL_mutex mtx;
     mtx.procLock = (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) ? s_LockSRWLockShared : s_LockSRWLockExclusive;
     mtx.procUnlock = (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) ? s_UnlockSRWLockShared : s_UnlockSRWLockExclusive;

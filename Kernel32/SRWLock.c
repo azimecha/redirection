@@ -40,12 +40,12 @@ void __stdcall Impl_InitializeSRWLock(PSRWLOCK plock) {
 
 void __stdcall Impl_AcquireSRWLockExclusive(PSRWLOCK plock) {
 	while (!Impl_TryAcquireSRWLockExclusive(plock))
-		s_Yield();
+		SRWYield();
 }
 
 void __stdcall Impl_AcquireSRWLockShared(PSRWLOCK plock) {
 	while (!Impl_TryAcquireSRWLockShared(plock))
-		s_Yield();
+		SRWYield();
 }
 
 void __stdcall Impl_ReleaseSRWLockExclusive(PSRWLOCK plock) {
