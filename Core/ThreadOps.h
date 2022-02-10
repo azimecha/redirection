@@ -14,10 +14,12 @@ DWORD CbGetProcessThreads(DWORD nProcessID, PDWORD* ppThreadIDs, PULONG pnThread
 DWORD CbEnterSupercriticalSection(PVOID* ppResumeData);
 DWORD CbExitSupercriticalSection(PVOID pResumeData);
 
+#if 0
 // very dangerous - forces another thread to run a piece of code
 DWORD CbQueueThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR nParam);
 
 // same as CbQueueThreadInterrupt but waits for the interrupt to be processed
 DWORD CbPerformThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR nParam);
+#endif
 
 #endif

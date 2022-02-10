@@ -98,7 +98,7 @@ BOOL ApplyLibraryLoadHooks(void) {
 
 	s_procRealMapViewOfSection = PaHookSimpleFunction(procMapViewOfSection, 16, s_InterceptedMapViewOfSection);
 	if (s_procRealMapViewOfSection == NULL) {
-		DbgPrint("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", GetLastError());
+		DbgPrint("[ApplyLibraryLoadHooks] PaHookSimpleFunction for NtMapViewOfSection failed with error 0x%08X\r\n", CbLastWinAPIError);
 		return FALSE;
 	}
 #endif

@@ -98,22 +98,27 @@ DWORD CbEnterSupercriticalSection(PVOID* ppData) {
 
 		nRunningThreads = 0;
 		for (nThread = 0; nThread < nTotalThreads; nThread++) {
+			// check if in list
 			if (avl_search(pdicSusThreads, (void*)pThreadIDs[nThread]) != NULL)
 				continue; // already in list
 
+			// check if it's the current thread
 			nRunningThreads++;
 			if (pThreadIDs[nThread] == CbGetTEB()->ClientId.UniqueThread)
 				continue; // is current thread
 
+			// open it
 			idThread.UniqueThread = nThread;
 			status = NtOpenThread(&hThread, THREAD_SUSPEND_RESUME, &attrib, &idThread);
 			if (CB_NT_FAILED(status))
 				goto L_exit;
 
+			// sus it
 			status = NtSuspendThread(hThread, NULL);
 			if (CB_NT_FAILED(status))
 				goto L_exit;
 
+			// put it in the list
 			if (avl_insert(pdicSusThreads, (void*)pThreadIDs[nThread], (void*)hThread) == NULL) {
 				NtResumeThread(hThread, NULL);
 				status = STATUS_NO_MEMORY;
@@ -146,10 +151,12 @@ DWORD CbExitSupercriticalSection(PVOID pData) {
 	return 0;
 }
 
+#if 0
 DWORD CbQueueThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR nParam) {
 
 }
 
 DWORD CbPerformThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR nParam) {
-
+	
 }
+#endif

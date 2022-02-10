@@ -602,6 +602,19 @@ typedef enum _SYSTEM_INFORMATION_CLASS {
 	SystemProcessAndThreadInformation = 5
 } SYSTEM_INFORMATION_CLASS;
 
+typedef struct _FILE_MODE_INFORMATION {
+	ULONG Mode;
+} FILE_MODE_INFORMATION, *PFILE_MODE_INFORMATION;
+
+
+typedef enum _OBJECT_WAIT_TYPE {
+	WaitAllObject,
+	WaitAnyObject
+} OBJECT_WAIT_TYPE, * POBJECT_WAIT_TYPE;
+
+
+typedef void(__stdcall* PIO_APC_ROUTINE)(PVOID pAPCContext, PIO_STATUS_BLOCK piosb, ULONG nReserved);
+
 typedef NTSTATUS(__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize,
 	PULONG pnResultSize);
 
@@ -623,6 +636,26 @@ typedef void(__stdcall* CbNTSubroutine_t)(void);
 typedef NTSTATUS(__stdcall* DbgPrint_t)(LPCSTR pcszFormat, ...);
 
 typedef void(__stdcall* RtlUnwind_t)(PVOID pTargetFrame, PVOID pTargetIP, PEXCEPTION_RECORD pExceptionRecord, PVOID pReturnValue);
+
+typedef NTSTATUS(__stdcall* NtReadFile_t)(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, PVOID pBuffer, ULONG nBytesToRead, OPTIONAL PLARGE_INTEGER pliByteOffset, OPTIONAL PULONG pnKey);
+
+typedef NTSTATUS(__stdcall* NtReadFileScatter_t)(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, PFILE_SEGMENT_ELEMENT pSegments, ULONG nBytesToRead, OPTIONAL PLARGE_INTEGER pliByteOffset, OPTIONAL PULONG pnKey);
+
+typedef NTSTATUS(__stdcall* NtWriteFile_t)(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, PVOID pBuffer, ULONG nBytesToWrite, OPTIONAL PLARGE_INTEGER pliByteOffset, OPTIONAL PULONG pnKey);
+
+typedef NTSTATUS(__stdcall* NtWriteFileGather_t)(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, PFILE_SEGMENT_ELEMENT pSegments, ULONG nBytesToWrite, OPTIONAL PLARGE_INTEGER pliByteOffset, OPTIONAL PULONG pnKey);
+
+typedef NTSTATUS(__stdcall* NtDeviceIoControlFile_t)(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, ULONG nIOCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen);
+
+typedef NTSTATUS(__stdcall* NtFsControlFile_t)(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, ULONG nFSCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen);
+
+typedef NTSTATUS(__stdcall* CbNtThreadProc_t)(PVOID pParam);
 
 #endif // CB_NTDLL_NO_TYPES
 
@@ -681,6 +714,13 @@ NTSTATUS __stdcall NtGetContextThread(HANDLE hThread, PCONTEXT pctx);
 NTSTATUS __stdcall NtSuspendThread(HANDLE hThread, OUT OPTIONAL PULONG pnPrevSusCount);
 NTSTATUS __stdcall NtResumeThread(HANDLE hThread, OUT OPTIONAL PULONG pnRemainingSusCount);
 NTSTATUS __stdcall NtOpenThread(OUT PHANDLE pHThread, ACCESS_MASK maskAccess, POBJECT_ATTRIBUTES pAttribs, CLIENT_ID* pThreadID);
+NTSTATUS __stdcall NtDelayExecution(BOOLEAN bAlertable, PLARGE_INTEGER pliTimeout);
+NTSTATUS __stdcall NtSetEvent(HANDLE hEvent, OPTIONAL OUT PULONG pnPrevState);
+NTSTATUS __stdcall NtWaitForMultipleObjects(ULONG nCount, PHANDLE phObjects, OBJECT_WAIT_TYPE nWaitType, BOOLEAN bAlertable, 
+	OPTIONAL PLARGE_INTEGER pliTimeout);
+NTSTATUS __stdcall NtQueueApcThread(HANDLE hThread, PIO_APC_ROUTINE procAPC, OPTIONAL PVOID pAPCParam, OPTIONAL PIO_STATUS_BLOCK piosbForAPC,
+	OPTIONAL ULONG nReserved);
+NTSTATUS __stdcall NtCancelIoFile(HANDLE hFile, PIO_STATUS_BLOCK iosbThisCall);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
@@ -689,6 +729,9 @@ void __stdcall RtlFreeUnicodeString(PUNICODE_STRING pusFromRtl);
 ULONG __stdcall RtlGetCurrentDirectory_U(ULONG nMaxLen, OUT PWSTR pwzBuffer);
 BOOLEAN __stdcall RtlDoesFileExists_U(PCWSTR pcwzPath);
 ULONG __stdcall RtlGetFullPathName_U(PCWSTR pcwzFileName, ULONG nBufSize, OUT PWSTR pwzBuffer, OPTIONAL OUT PWSTR pwzShortName);
+NTSTATUS __stdcall RtlCreateUserThread(HANDLE hProcess, OPTIONAL PSECURITY_DESCRIPTOR psd, BOOLEAN bCreateSus, ULONG nStackZeroBits,
+	OUT PULONG pnStackReserved, OUT PULONG pnStackCommit, CbNtThreadProc_t pStartAddress, OPTIONAL PVOID pStartParam, OUT PHANDLE phThread,
+	OUT CLIENT_ID* pClientID);
 
 PVOID __stdcall RtlCreateHeap(ULONG flags, OPTIONAL PVOID pBase, OPTIONAL SIZE_T nReserveSize, OPTIONAL SIZE_T nCommitSize, OPTIONAL PVOID pLock, 
 	OPTIONAL PVOID pParams);

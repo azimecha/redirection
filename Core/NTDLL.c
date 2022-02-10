@@ -75,12 +75,20 @@ CB_NTDLL_DEFINE(NtClose, (HANDLE a), (a));
 CB_NTDLL_DEFINE(NtAllocateVirtualMemory, (HANDLE a, OUT PVOID* b, ULONG c, OUT PULONG d, ULONG e, ULONG f), (a, b, c, d, e, f));
 CB_NTDLL_DEFINE(NtFreeVirtualMemory, (HANDLE a, PVOID* b, IN OUT PULONG c, ULONG d), (a, b, c, d));
 CB_NTDLL_DEFINE(NtQuerySystemTime, (PLARGE_INTEGER a), (a));
+CB_NTDLL_DEFINE(NtDelayExecution, (BOOLEAN a, PLARGE_INTEGER b), (a, b));
+CB_NTDLL_DEFINE(NtSetEvent, (HANDLE a, OPTIONAL OUT PULONG b), (a, b));
+CB_NTDLL_DEFINE(NtWaitForMultipleObjects, (ULONG a, PHANDLE b, OBJECT_WAIT_TYPE c, BOOLEAN d, OPTIONAL PLARGE_INTEGER e), (a, b, c, d, e));
+CB_NTDLL_DEFINE(NtQueueApcThread, (HANDLE a, PIO_APC_ROUTINE b, OPTIONAL PVOID c, OPTIONAL PIO_STATUS_BLOCK d, OPTIONAL ULONG e),
+	(a, b, c, d, e));
+CB_NTDLL_DEFINE(NtCancelIoFile, (HANDLE a, PIO_STATUS_BLOCK b), (a, b));
 
 CB_NTDLL_DEFINE_ALT(PVOID, RtlCreateHeap, (ULONG a, OPTIONAL PVOID b, OPTIONAL SIZE_T c, OPTIONAL SIZE_T d, OPTIONAL PVOID e,
 	OPTIONAL PVOID f), (a, b, c, d, e, f));
 CB_NTDLL_DEFINE_ALT(PVOID, RtlAllocateHeap, (PVOID a, OPTIONAL ULONG b, SIZE_T c), (a, b, c));
 CB_NTDLL_DEFINE_ALT(BOOL, RtlFreeHeap, (PVOID a, OPTIONAL ULONG b, PVOID c), (a, b, c));
 CB_NTDLL_DEFINE_ALT(PVOID, RtlDestroyHeap, (PVOID a), (a));
+CB_NTDLL_DEFINE(RtlCreateUserThread, (HANDLE a, OPTIONAL PSECURITY_DESCRIPTOR b, BOOLEAN c, ULONG d, OUT PULONG e, OUT PULONG f,
+	CbNtThreadProc_t g, OPTIONAL PVOID h, OUT PHANDLE i, OUT CLIENT_ID* j), (a, b, c, d, e, f, g, h, i, j));
 
 CB_NTDLL_DEFINE_VOID(RtlAcquirePebLock, (), ());
 CB_NTDLL_DEFINE_VOID(RtlReleasePebLock, (), ());
