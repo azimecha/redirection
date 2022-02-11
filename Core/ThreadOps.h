@@ -22,4 +22,15 @@ DWORD CbQueueThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR nPa
 DWORD CbPerformThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR nParam);
 #endif
 
+// simple spinlock - only CbAcquireSpinLockYielding requires system function call
+typedef volatile PVOID CbSpinLock_t;
+#define CB_SPINLOCK_INITIAL ((CbSpinLock_t)0)
+
+void CbAcquireSpinLock(CbSpinLock_t* pLockVal);
+void CbAcquireSpinLockYielding(CbSpinLock_t* pLockVal);
+void CbReleaseSpinLock(CbSpinLock_t* pLockVal);
+
+// opens all-access handle to the current thread
+DWORD CbOpenCurrentThread(OUT PHANDLE phCurThread);
+
 #endif

@@ -3,10 +3,12 @@
 #ifndef HEADER_WAYSTLS
 #define HEADER_WAYSTLS
 
+#ifndef MAGICWAYS_EXPORTED
 #ifdef MAGICWAYS_BUILD
 #define MAGICWAYS_EXPORTED __declspec(dllexport)
 #else
 #define MAGICWAYS_EXPORTED __declspec(dllimport)
+#endif
 #endif
 
 #define _X86_

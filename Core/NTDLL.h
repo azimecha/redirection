@@ -78,6 +78,10 @@
 #define STATUS_NO_SUCH_FILE 0xC000000F
 #endif
 
+#ifndef STATUS_CANCELLED
+#define STATUS_CANCELLED 0xC0000120
+#endif
+
 #ifndef STATUS_SEVERITY_SUCCESS
 #define STATUS_SEVERITY_SUCCESS 0
 #endif
@@ -94,8 +98,14 @@
 #define STATUS_SEVERITY_ERROR 3
 #endif
 
+#ifndef FACILITY_WIN32
+#define FACILITY_WIN32 7
+#endif
+
 #define CB_NTSTATUS_SEVERITY(s) (((s) & 0xC0000000) >> 30)
 #define CB_NT_FAILED(s) (CB_NTSTATUS_SEVERITY(s) == STATUS_SEVERITY_ERROR)
+
+#define CB_WINAPIERR_TO_NTSTATUS(e) ((STATUS_SEVERITY_ERROR << 30) | (FACILITY_WIN32 << 16) | ((e) & 0xFFFF))
 
 #ifndef WAIT_ABANDONED
 #define WAIT_ABANDONED 0x0080
@@ -606,12 +616,15 @@ typedef struct _FILE_MODE_INFORMATION {
 	ULONG Mode;
 } FILE_MODE_INFORMATION, *PFILE_MODE_INFORMATION;
 
-
 typedef enum _OBJECT_WAIT_TYPE {
 	WaitAllObject,
 	WaitAnyObject
 } OBJECT_WAIT_TYPE, * POBJECT_WAIT_TYPE;
 
+typedef enum _EVENT_TYPE {
+	NotificationEvent,
+	SynchronizationEvent
+} EVENT_TYPE, * PEVENT_TYPE;
 
 typedef void(__stdcall* PIO_APC_ROUTINE)(PVOID pAPCContext, PIO_STATUS_BLOCK piosb, ULONG nReserved);
 
@@ -713,7 +726,7 @@ NTSTATUS __stdcall NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS iclass, PVO
 NTSTATUS __stdcall NtGetContextThread(HANDLE hThread, PCONTEXT pctx);
 NTSTATUS __stdcall NtSuspendThread(HANDLE hThread, OUT OPTIONAL PULONG pnPrevSusCount);
 NTSTATUS __stdcall NtResumeThread(HANDLE hThread, OUT OPTIONAL PULONG pnRemainingSusCount);
-NTSTATUS __stdcall NtOpenThread(OUT PHANDLE pHThread, ACCESS_MASK maskAccess, POBJECT_ATTRIBUTES pAttribs, CLIENT_ID* pThreadID);
+NTSTATUS __stdcall NtOpenThread(OUT PHANDLE phThread, ACCESS_MASK maskAccess, POBJECT_ATTRIBUTES pAttribs, CLIENT_ID* pThreadID);
 NTSTATUS __stdcall NtDelayExecution(BOOLEAN bAlertable, PLARGE_INTEGER pliTimeout);
 NTSTATUS __stdcall NtSetEvent(HANDLE hEvent, OPTIONAL OUT PULONG pnPrevState);
 NTSTATUS __stdcall NtWaitForMultipleObjects(ULONG nCount, PHANDLE phObjects, OBJECT_WAIT_TYPE nWaitType, BOOLEAN bAlertable, 
@@ -721,6 +734,10 @@ NTSTATUS __stdcall NtWaitForMultipleObjects(ULONG nCount, PHANDLE phObjects, OBJ
 NTSTATUS __stdcall NtQueueApcThread(HANDLE hThread, PIO_APC_ROUTINE procAPC, OPTIONAL PVOID pAPCParam, OPTIONAL PIO_STATUS_BLOCK piosbForAPC,
 	OPTIONAL ULONG nReserved);
 NTSTATUS __stdcall NtCancelIoFile(HANDLE hFile, PIO_STATUS_BLOCK iosbThisCall);
+NTSTATUS __stdcall NtCreateEvent(PHANDLE phEvent, ACCESS_MASK access, OPTIONAL POBJECT_ATTRIBUTES pattr, EVENT_TYPE nType, BOOLEAN bSignaled);
+NTSTATUS __stdcall NtTerminateThread(HANDLE hThread, NTSTATUS statusThreadExit);
+NTSTATUS __stdcall NtYieldExecution(void);
+NTSTATUS __stdcall NtWaitForSingleObject(HANDLE hObject, BOOLEAN bAlertable, OPTIONAL PLARGE_INTEGER pliTimeout);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);

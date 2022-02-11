@@ -160,3 +160,28 @@ DWORD CbPerformThreadInterrupt(HANDLE hThread, PAPCFUNC procRoutine, ULONG_PTR n
 	
 }
 #endif
+
+void CbAcquireSpinLock(CbSpinLock_t* pLockVal) {
+	PVOID pThisThreadVal;
+	pThisThreadVal = (PVOID)CbGetTEB()->ClientId.UniqueThread;
+	while (InterlockedCompareExchangePointer(pLockVal, pThisThreadVal, 0) != 0);
+}
+
+void CbAcquireSpinLockYielding(CbSpinLock_t* pLockVal) {
+	PVOID pThisThreadVal;
+	pThisThreadVal = (PVOID)CbGetTEB()->ClientId.UniqueThread;
+	while (InterlockedCompareExchangePointer(pLockVal, pThisThreadVal, 0) != 0)
+		NtYieldExecution();
+}
+
+void CbReleaseSpinLock(CbSpinLock_t* pLockVal) {
+	PVOID pThisThreadVal;
+	pThisThreadVal = (PVOID)CbGetTEB()->ClientId.UniqueThread;
+	InterlockedCompareExchangePointer(pLockVal, 0, pThisThreadVal);
+}
+
+DWORD CbOpenCurrentThread(OUT PHANDLE phCurThread) {
+	POBJECT_ATTRIBUTES attrib;
+	RtlSecureZeroMemory(&attrib, sizeof(attrib));
+	return NtOpenThread(phCurThread, THREAD_ALL_ACCESS, &attrib, &CbGetTEB()->ClientId);
+}

@@ -86,10 +86,4 @@ PIMAGE_NT_HEADERS CbGetImageNTHeaders(LPVOID pImageBase);
 LPVOID CbGetImageEntryPoint(LPVOID pImageBase);
 LPDWORD CbLastErrorAddress(void);
 
-typedef volatile PVOID CbSpinLock_t;
-#define CB_SPINLOCK_INITIAL ((CbSpinLock_t)0)
-
-void CbAcquireSpinLock(CbSpinLock_t* pLockVal);
-void CbReleaseSpinLock(CbSpinLock_t* pLockVal);
-
 #endif
