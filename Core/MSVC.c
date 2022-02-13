@@ -33,102 +33,8 @@
 // SUCH DAMAGE.
 // 
 
-#include <stdint.h>
-
-typedef unsigned int DWORD;
-typedef unsigned char BYTE;
-typedef unsigned long ULONG;
-typedef int LONG;
-typedef uintptr_t UINT_PTR;
-typedef uintptr_t* PUINT_PTR;
-typedef unsigned short WORD;
-typedef uintptr_t DWORD_PTR;
-
-#define CONTEXT_i386    0x00010000
-#define CONTEXT_i486    0x00010000
-
-#define CONTEXT_CONTROL         (CONTEXT_i386 | 0x00000001L)
-#define CONTEXT_INTEGER         (CONTEXT_i386 | 0x00000002L)
-#define CONTEXT_SEGMENTS        (CONTEXT_i386 | 0x00000004L)
-#define CONTEXT_FLOATING_POINT  (CONTEXT_i386 | 0x00000008L)
-#define CONTEXT_DEBUG_REGISTERS (CONTEXT_i386 | 0x00000010L)
-#define CONTEXT_EXTENDED_REGISTERS  (CONTEXT_i386 | 0x00000020L)
-
-#define CONTEXT_FULL (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS)
-
-#define MAXIMUM_SUPPORTED_EXTENSION     512
-
-#define SIZE_OF_80387_REGISTERS      80
-
-typedef struct _FLOATING_SAVE_AREA {
-	DWORD   ControlWord;
-	DWORD   StatusWord;
-	DWORD   TagWord;
-	DWORD   ErrorOffset;
-	DWORD   ErrorSelector;
-	DWORD   DataOffset;
-	DWORD   DataSelector;
-	BYTE    RegisterArea[SIZE_OF_80387_REGISTERS];
-	DWORD   Cr0NpxState;
-} FLOATING_SAVE_AREA;
-
-typedef FLOATING_SAVE_AREA* PFLOATING_SAVE_AREA;
-
-typedef struct _CONTEXT {
-	DWORD ContextFlags;
-
-	DWORD   Dr0;
-	DWORD   Dr1;
-	DWORD   Dr2;
-	DWORD   Dr3;
-	DWORD   Dr6;
-	DWORD   Dr7;
-
-	FLOATING_SAVE_AREA FloatSave;
-
-	DWORD   SegGs;
-	DWORD   SegFs;
-	DWORD   SegEs;
-	DWORD   SegDs;
-
-	DWORD   Edi;
-	DWORD   Esi;
-	DWORD   Ebx;
-	DWORD   Edx;
-	DWORD   Ecx;
-	DWORD   Eax;
-
-	DWORD   Ebp;
-	DWORD   Eip;
-	DWORD   SegCs;
-	DWORD   EFlags;
-	DWORD   Esp;
-	DWORD   SegSs;
-
-	BYTE    ExtendedRegisters[MAXIMUM_SUPPORTED_EXTENSION];
-} CONTEXT;
-
-typedef CONTEXT* PCONTEXT;
-typedef CONTEXT* LPCONTEXT;
-
-#define STATUS_NONCONTINUABLE_EXCEPTION     0xC0000025
-#define STATUS_INVALID_DISPOSITION          0xC0000026
-#define STATUS_UNWIND                       0xC0000027
-#define STATUS_BAD_STACK                    0xC0000028
-#define STATUS_INVALID_UNWIND_TARGET        0xC0000029
-
-#define STATUS_GUARD_PAGE_VIOLATION         0x80000001
-#define EXCEPTION_DATATYPE_MISALIGNMENT     0x80000002
-#define EXCEPTION_ACCESS_VIOLATION          0xC0000005
-#define EXCEPTION_ILLEGAL_INSTRUCTION       0xC000001D
-#define EXCEPTION_ARRAY_BOUNDS_EXCEEDED     0xC000008C
-#define EXCEPTION_INT_DIVIDE_BY_ZERO        0xC0000094
-#define EXCEPTION_INT_OVERFLOW              0xC0000095
-#define EXCEPTION_STACK_OVERFLOW            0xC00000FD
-
-#define EXCEPTION_EXECUTE_HANDLER           1
-#define EXCEPTION_CONTINUE_SEARCH           0
-#define EXCEPTION_CONTINUE_EXECUTION        -1
+#include "NTDLL.h"
+#include "ThreadOps.h"
 
 #define EH_NONCONTINUABLE   0x01
 #define EH_UNWINDING        0x02
@@ -136,36 +42,8 @@ typedef CONTEXT* LPCONTEXT;
 #define EH_STACK_INVALID    0x08
 #define EH_NESTED_CALL      0x10
 
-#define EXCEPTION_CONTINUABLE        0
-#define EXCEPTION_NONCONTINUABLE     EH_NONCONTINUABLE
-
-#define EXCEPTION_MAXIMUM_PARAMETERS 15
-
-typedef void* PVOID;
-
-typedef struct _EXCEPTION_RECORD {
-	DWORD ExceptionCode;
-	DWORD ExceptionFlags;
-	struct _EXCEPTION_RECORD* ExceptionRecord;
-	PVOID ExceptionAddress;
-	DWORD NumberParameters;
-	ULONG* ExceptionInformation[EXCEPTION_MAXIMUM_PARAMETERS];
-} EXCEPTION_RECORD, * PEXCEPTION_RECORD;
-
-typedef struct _EXCEPTION_POINTERS {
-	PEXCEPTION_RECORD ExceptionRecord;
-	PCONTEXT ContextRecord;
-} EXCEPTION_POINTERS, * PEXCEPTION_POINTERS;
-
 typedef LONG(__stdcall* PTOP_LEVEL_EXCEPTION_FILTER)(PEXCEPTION_POINTERS ExceptionInfo);
 typedef PTOP_LEVEL_EXCEPTION_FILTER LPTOP_LEVEL_EXCEPTION_FILTER;
-
-typedef enum _EXCEPTION_DISPOSITION {
-	ExceptionContinueExecution,
-	ExceptionContinueSearch,
-	ExceptionNestedException,
-	ExceptionCollidedUnwind
-} EXCEPTION_DISPOSITION;
 
 struct _EXCEPTION_FRAME;
 
@@ -371,3 +249,66 @@ IMAGE_LOAD_CONFIG_DIRECTORY32_2 _load_config_used = {
 	__safe_se_handler_table,
 	(DWORD)(DWORD_PTR)&__safe_se_handler_count
 };
+
+typedef int (* CxxFrameHandler3_t)(
+	void* pExcept,
+	void* pRN,
+	void* pContext,
+	void* pDC);
+
+typedef HANDLE(__stdcall* LoadLibrary_t)(const char* pcszName);
+
+int
+__CxxFrameHandler3(
+	void* pExcept,
+	void* pRN,
+	void* pContext,
+	void* pDC)
+{
+	static CxxFrameHandler3_t procFrameHandler = NULL;
+	static CbSpinLock_t lock = CB_SPINLOCK_INITIAL;
+	LoadLibrary_t procLoadLibrary;
+	PVOID pKernel32;
+	HANDLE hMSVCRT;
+
+	if (procFrameHandler == NULL) {
+		CbAcquireSpinLockYielding(&lock);
+
+		while (procFrameHandler == NULL) {
+			procFrameHandler = (CxxFrameHandler3_t)-1;
+
+			pKernel32 = CbGetLoadedImageByName("kernel32");
+			if (pKernel32 == NULL) {
+				DbgPrint("[MSVC:__CxxFrameHandler3] Kernel32 not found\r\n");
+				break;
+			}
+
+			procLoadLibrary = CbGetSymbolAddress(pKernel32, "LoadLibraryA");
+			if (procLoadLibrary == NULL) {
+				DbgPrint("[MSVC:__CxxFrameHandler3] LoadLibraryA not found in kernel32\r\n");
+				break;
+			}
+
+			hMSVCRT = procLoadLibrary("msvcrt.dll");
+			if (hMSVCRT == NULL) {
+				DbgPrint("[MSVC:__CxxFrameHandler3] LoadLibraryA on msvcrt.dll failed with error 0x%08X\r\n", CbLastWinAPIError);
+				break;
+			}
+
+			procFrameHandler = CbGetSymbolAddress((LPVOID)hMSVCRT, "__CxxFrameHandler3");
+			if (procLoadLibrary == NULL) {
+				DbgPrint("[MSVC:__CxxFrameHandler3] __CxxFrameHandler3 not found in msvcrt\r\n");
+				break;
+			}
+		}
+
+		CbReleaseSpinLock(&lock);
+	}
+
+	if ((procFrameHandler != NULL) && (procFrameHandler != (CxxFrameHandler3_t)-1))
+		procFrameHandler(pExcept, pRN, pContext, pDC);
+	else
+		DbgPrint("[MSVC:__CxxFrameHandler3] Doing nothing\r\n");
+
+	return 0;
+}

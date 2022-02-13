@@ -1,5 +1,6 @@
 #include "NTDLL.h"
 #include "ImportHelper.h"
+#include "ThreadOps.h"
 #include <malloc.h>
 
 /*
@@ -75,6 +76,11 @@ CB_NTDLL_DEFINE(NtClose, (HANDLE a), (a));
 CB_NTDLL_DEFINE(NtAllocateVirtualMemory, (HANDLE a, OUT PVOID* b, ULONG c, OUT PULONG d, ULONG e, ULONG f), (a, b, c, d, e, f));
 CB_NTDLL_DEFINE(NtFreeVirtualMemory, (HANDLE a, PVOID* b, IN OUT PULONG c, ULONG d), (a, b, c, d));
 CB_NTDLL_DEFINE(NtQuerySystemTime, (PLARGE_INTEGER a), (a));
+CB_NTDLL_DEFINE(NtQuerySystemInformation, (SYSTEM_INFORMATION_CLASS a, PVOID b, ULONG c, PULONG d), (a, b, c, d));
+CB_NTDLL_DEFINE(NtGetContextThread, (HANDLE a, PCONTEXT b), (a, b));
+CB_NTDLL_DEFINE(NtSuspendThread, (HANDLE a, OUT OPTIONAL PULONG b), (a, b));
+CB_NTDLL_DEFINE(NtResumeThread, (HANDLE a, OUT OPTIONAL PULONG b), (a, b));
+CB_NTDLL_DEFINE(NtOpenThread, (OUT PHANDLE a, ACCESS_MASK b, POBJECT_ATTRIBUTES c, CLIENT_ID* d), (a, b, c, d));
 CB_NTDLL_DEFINE(NtDelayExecution, (BOOLEAN a, PLARGE_INTEGER b), (a, b));
 CB_NTDLL_DEFINE(NtSetEvent, (HANDLE a, OPTIONAL OUT PULONG b), (a, b));
 CB_NTDLL_DEFINE(NtWaitForMultipleObjects, (ULONG a, PHANDLE b, OBJECT_WAIT_TYPE c, BOOLEAN d, OPTIONAL PLARGE_INTEGER e), (a, b, c, d, e));
@@ -376,7 +382,7 @@ NTSTATUS CbDisplayError(DWORD nErrorCode, PEXCEPTION_POINTERS pex, LPCSTR pcszCo
 	pszBufCur = szErrorBuf;
 	nCharsLeft = sizeof(szErrorBuf) - 1;
 
-	CbAcquireSpinLock(&sl);
+	CbAcquireSpinLockYielding(&sl);
 	memset(szErrorBuf, 0, sizeof(szErrorBuf));
 
 	nPrinted = snprintf(pszBufCur, nCharsLeft, "Error 0x%08X while %s", nErrorCode, pcszContext);

@@ -31,15 +31,31 @@ PVOID MAGICWAYS_EXPORTED MwGetTLS(LPCGUID pcidObject, DWORD nSize, OPTIONAL MwTL
 	
 	pEntry = s_FindEntry(pcidObject);
 	if (pEntry != NULL)
-		return pEntry;
+		return pEntry->arrData;
 
 	pEntry = s_CreateEntry(pcidObject, nSize, procCtor, procDtor, pcszName);
-	return pEntry;
+	return pEntry->arrData;
+}
+
+PVOID MAGICWAYS_EXPORTED MwTryGetTLS(LPCGUID pcidObject) {
+	PMW_TLS_ENTRY pEntry = NULL;
+
+	pEntry = s_FindEntry(pcidObject);
+	if (pEntry == NULL) 
+		CbLastWinAPIError = ERROR_NOT_FOUND;
+
+	return pEntry ? pEntry->arrData : NULL;
 }
 
 void MAGICWAYS_EXPORTED MwDiscardTLS(LPCGUID pcidObject) {
 	s_RemoveEntry(pcidObject);
 }
+
+BOOL MAGICWAYS_EXPORTED MwNullTLSCtor(PVOID pData) {
+	return TRUE;
+}
+
+void MAGICWAYS_EXPORTED MwNullTLSDtor(PVOID pData) { }
 
 BOOL TLSInitProcess(void) {
 	s_nIndex = TlsAlloc();
@@ -55,6 +71,7 @@ BOOL TLSInitThread(void) {
 		return FALSE;
 
 	avl_initialize(pTree, s_CompareKeys, CbHeapFree);
+	TlsSetValue(s_nIndex, pTree);
 	return TRUE;
 }
 
@@ -75,7 +92,15 @@ BOOL TLSUninitProcess(void) {
 }
 
 static avl_tree_t* s_GetLocalTree(void) {
-	return TlsGetValue(s_nIndex);
+	avl_tree_t* pTree;
+
+	pTree = TlsGetValue(s_nIndex);
+	if (pTree == NULL) {
+		TLSInitThread();
+		pTree = TlsGetValue(s_nIndex);
+	}
+
+	return pTree;
 }
 
 static PMW_TLS_ENTRY s_FindEntry(LPCGUID pidObject) {
@@ -93,7 +118,7 @@ static PMW_TLS_ENTRY s_CreateEntry(LPCGUID pcidObject, DWORD nSize, OPTIONAL MwT
 	BOOL bSuccess = FALSE;
 	BOOL bConstructed = FALSE;
 
-	pEntry = CbHeapAllocate(nSize, FALSE);
+	pEntry = CbHeapAllocate(sizeof(MW_TLS_ENTRY) + nSize, FALSE);
 	if (pEntry == NULL)
 		goto L_exit;
 
@@ -113,6 +138,8 @@ static PMW_TLS_ENTRY s_CreateEntry(LPCGUID pcidObject, DWORD nSize, OPTIONAL MwT
 
 	if (!s_InsertEntry(pcidObject, pEntry))
 		goto L_exit;
+
+	bSuccess = TRUE;
 
 L_exit:
 	if (!bSuccess && pEntry) {
@@ -138,12 +165,8 @@ static BOOL s_InsertEntry(LPCGUID pcidObject, PMW_TLS_ENTRY pEntry) {
 		return FALSE;
 	memcpy(pidCopy, pcidObject, sizeof(GUID));
 
-	if (avl_insert(pTree, pidCopy, pEntry) == NULL) {
-		CbHeapFree(pidCopy);
-		return FALSE;
-	}
-
-	return TRUE;
+	avl_insert(pTree, pidCopy, pEntry);
+	return avl_search(pTree, pidCopy) != NULL;
 }
 
 static void s_RemoveEntry(LPCGUID pcidObject) {

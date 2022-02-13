@@ -181,7 +181,10 @@ void CbReleaseSpinLock(CbSpinLock_t* pLockVal) {
 }
 
 DWORD CbOpenCurrentThread(OUT PHANDLE phCurThread) {
-	POBJECT_ATTRIBUTES attrib;
+	OBJECT_ATTRIBUTES attrib;
+
 	RtlSecureZeroMemory(&attrib, sizeof(attrib));
+	attrib.Length = sizeof(attrib);
+
 	return NtOpenThread(phCurThread, THREAD_ALL_ACCESS, &attrib, &CbGetTEB()->ClientId);
 }

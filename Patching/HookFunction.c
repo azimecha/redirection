@@ -1,3 +1,5 @@
+#define PA_EXTRA_PROT_CHANGE_FOR_ASAN
+
 #include "HookFunction.h"
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -24,6 +26,20 @@ LPVOID PaHookSimpleFunction(LPVOID pFunction, SIZE_T nSize, LPVOID pHook) {
 	
 	pCopy = RtlAllocateHeap(hCodeHeap, 0, nSize);
 	if (pCopy == NULL) return FALSE;
+
+#ifdef PA_EXTRA_PROT_CHANGE_FOR_ASAN
+	PVOID pToProtect;
+	SIZE_T nToProtect;
+	NTSTATUS status;
+	ULONG nOldProtect;
+
+	pToProtect = pCopy; nToProtect = nSize;
+	status = NtProtectVirtualMemory(CB_CURRENT_PROCESS, &pToProtect, &nToProtect, PAGE_EXECUTE_READWRITE, &nOldProtect);
+	if (status != 0) {
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
+#endif
 
 	memcpy(pCopy, pFunction, nSize);
 

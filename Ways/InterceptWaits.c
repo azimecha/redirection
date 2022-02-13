@@ -3,6 +3,7 @@
 #include <HookFunction.h>
 #include <ThreadOps.h>
 #include <NTDLL.h>
+#include <avl.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -89,9 +90,9 @@ static NTSTATUS s_ImplFsControlFile(PMW_WAITS_IO_OP pop);
 static void __stdcall s_NonalertableIOTaskProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved);
 static void __stdcall s_AlertableIOTaskProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved);
 static void __stdcall s_AlertableIOCancelProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved);
-
-static NTSTATUS __stdcall s_AsyncIOThreadProc(PVOID pParams);
 static void __stdcall s_OverlappedIOObserverProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved);
+static void __stdcall s_OverlappedIOWorkerProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved);
+static void __stdcall s_SetThreadAsNoInterceptProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved);
 
 static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop);
 
@@ -108,6 +109,15 @@ static void s_UninitAsyncIOMetadata(PMW_WAITS_IO_METADATA pmeta);
 
 static void s_InitReadWriteOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
 	PIO_STATUS_BLOCK piosb, PVOID pBuffer, ULONG nBytesToXfer, OPTIONAL PLARGE_INTEGER pliByteOffset, OPTIONAL PULONG pnKey);
+static void s_InitIOControlOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+	PIO_STATUS_BLOCK piosb, ULONG nIOCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen);
+
+static NTSTATUS s_SetThreadAsNoIntercept(DWORD nThreadID);
+static NTSTATUS s_UnsetThreadAsNoIntercept(DWORD nThreadID);
+static NTSTATUS s_CheckNoInterceptStatus(PBOOL pbNoIntercept);
+
+static void s_NullKeyDtor(void* key);
+static void s_HandleClosingValueDtor(void* key, HANDLE hValue);
 
 static const GUID s_idSyncIOCompleteEvent = { 0x19345D63, 0x00ED, 0x40B5, {0x94, 0x52, 0x83, 0x25, 0x29, 0x00, 0x38, 0xDF} };
 static const GUID s_idSyncIOCancelledEvent = { 0xE81C2100, 0x22CA, 0x45FE, {0x89, 0xC8, 0x84, 0xE4, 0x2E, 0xDA, 0xC6, 0xAF} };
@@ -120,6 +130,9 @@ static NtWriteFile_t s_procNtWriteFile = NULL;
 static NtWriteFileGather_t s_procNtWriteFileGather = NULL;
 static NtDeviceIoControlFile_t s_procNtDeviceIoControlFile = NULL;
 static NtFsControlFile_t s_procNtFsControlFile = NULL;
+
+static avl_tree_t s_treeNoIntercept = { 0 }; // TODO: Removing dead threads
+static CbSpinLock_t s_lockNoInterceptList = CB_SPINLOCK_INITIAL;
 
 static MW_WAITS_TARGET s_arrToIntercept[] = {
 	MW_WAITS_TARGET_NAMED(ReadFile),
@@ -134,6 +147,8 @@ BOOL ApplyWaitHooks(void) {
 	SIZE_T nTarget;
 	PMW_WAITS_TARGET pTargetInfo;
 	PVOID pLocation;
+
+	avl_initialize(&s_treeNoIntercept, avl_ptrcmp, s_NullKeyDtor);
 
 	for (nTarget = 0; nTarget < RTL_NUMBER_OF_V2(s_arrToIntercept); nTarget++) {
 		pTargetInfo = &s_arrToIntercept[nTarget];
@@ -197,7 +212,7 @@ static NTSTATUS __stdcall s_IcDeviceIoControlFile(HANDLE hFile, OPTIONAL HANDLE 
 	PIO_STATUS_BLOCK piosb, ULONG nIOCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen)
 {
 	MW_WAITS_IO_OP op;
-	s_InitIOControlIo(&op, hFile, hEvent, pAPCRoutine, pAPCContext, piosb, nIOCTL, pInBuf, nInBufLen, pOutBuf, nOutBufLen);
+	s_InitIOControlOp(&op, hFile, hEvent, pAPCRoutine, pAPCContext, piosb, nIOCTL, pInBuf, nInBufLen, pOutBuf, nOutBufLen);
 	op.procDoActualIO = s_ImplDeviceIoControlFile;
 	return s_PerformIO(&op);
 }
@@ -206,7 +221,7 @@ static NTSTATUS __stdcall s_IcFsControlFile(HANDLE hFile, OPTIONAL HANDLE hEvent
 	PIO_STATUS_BLOCK piosb, ULONG nFSCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen)
 {
 	MW_WAITS_IO_OP op;
-	s_InitIOControlIo(&op, hFile, hEvent, pAPCRoutine, pAPCContext, piosb, nFSCTL, pInBuf, nInBufLen, pOutBuf, nOutBufLen);
+	s_InitIOControlOp(&op, hFile, hEvent, pAPCRoutine, pAPCContext, piosb, nFSCTL, pInBuf, nInBufLen, pOutBuf, nOutBufLen);
 	op.procDoActualIO = s_ImplFsControlFile;
 	return s_PerformIO(&op);
 }
@@ -416,7 +431,7 @@ static void __stdcall s_OverlappedIOWorkerProc(PMW_WAITS_IO_OP pop, PIO_STATUS_B
 
 	status = NtWaitForSingleObject(pop->meta.hTaskCompleteEvent, FALSE, NULL);
 	if (status != WAIT_OBJECT_0) {
-		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X waiting for completion event! I/O not completed!\r\n", GetExceptionCode());
+		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X waiting for completion event! I/O not completed!\r\n", status);
 		pop->meta.statusTaskResult = status;
 		goto L_setevent;
 	}
@@ -426,7 +441,7 @@ static void __stdcall s_OverlappedIOWorkerProc(PMW_WAITS_IO_OP pop, PIO_STATUS_B
 L_setevent:
 	status = NtSetEvent(pop->meta.hTaskCompleteEvent, NULL);
 	if (CB_NT_FAILED(status))
-		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X setting completion event! I/O will never complete!\r\n", GetExceptionCode());
+		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X setting completion event! I/O will never complete!\r\n", status);
 }
 
 static void __stdcall s_AlertableIOCancelProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved) {
@@ -448,13 +463,30 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 	MW_WAITS_FILE_MODE mode;
 	PIO_APC_ROUTINE procAPC;
 	PMW_WAITS_IO_OP popOriginal = NULL;
+	BOOL bSucc = FALSE, bNoIntercept;
 
 	// runs on main thread
+
+	status = s_CheckNoInterceptStatus(&bNoIntercept);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X checking no-intercept status\r\n", status);
+		goto L_exit;
+	}
+
+	if (bNoIntercept) {
+		__try {
+			status = pop->procDoActualIO(pop);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			status = GetExceptionCode();
+		}
+
+		return status;
+	}
 
 	status = s_CheckMode(pop->hFile, &mode);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X querying mode\r\n", status);
-		return status;
+		goto L_exit;
 	}
 
 	switch (mode) {
@@ -481,19 +513,65 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 	default:
 		DbgPrint("[InterceptWaits:s_PerformIO] Unknown mode %u\r\n", mode);
 		status = STATUS_INVALID_PARAMETER;
+		goto L_exit;
 	}
 
 	status = (mode == MwWaitsFileMode_Overlapped) ? s_InitAsyncIOMetadata(&pop->meta) : s_InitSyncIOMetadata(&pop->meta);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X initializing I/O metadata\r\n", status);
-		return status;
+		goto L_exit;
 	}
 
+	status = NtQueueApcThread(pop->meta.hNewThread, procAPC, pop, pop->piosb, 0);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_PerformIO] NtQueueApcThread returned status 0x%08X\r\n", status);
+		goto L_exit;
+	}
 
+	switch (mode) {
+	case MwWaitsFileMode_Overlapped:
+		status = STATUS_PENDING;
+		break;
+
+	case MwWaitsFileMode_SyncAlert:
+		__try {
+			pop->meta.statusTaskResult = pop->procDoActualIO(pop);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			DbgPrint("[InterceptWaits:s_PerformIO] procDoActualIO encountered exception 0x%08X\r\n", GetExceptionCode());
+			pop->meta.statusTaskResult = GetExceptionCode();
+		}
+		status = NtSetEvent(pop->meta.hTaskCompleteEvent, NULL);
+		if (CB_NT_FAILED(status)) {
+			DbgPrint("[InterceptWaits:s_PerformIO] NtSetEvent returned status 0x%08X\r\n", status);
+			MwDiscardTLS(&s_idSyncIOThreadHandle);
+			pop->meta.hNewThread = NULL;
+		}
+		status = pop->meta.statusTaskResult;
+		break;
+
+	case MwWaitsFileMode_Synchronous:
+		status = NtWaitForSingleObject(pop->meta.hTaskCompleteEvent, FALSE, NULL);
+		if (CB_NT_FAILED(status)) {
+			DbgPrint("[InterceptWaits:s_PerformIO] NtWaitForSingleObject returned status 0x%08X\r\n", status);
+			MwDiscardTLS(&s_idSyncIOThreadHandle);
+			pop->meta.hNewThread = NULL;
+		}
+		status = pop->meta.statusTaskResult;
+		break;
+	}
+
+	bSucc = TRUE;
 
 L_exit:
-	if (popOriginal != NULL)
-		CbHeapFree(pop);
+	if (mode == MwWaitsFileMode_Overlapped) {
+		if (!bSucc) {
+			s_UninitAsyncIOMetadata(&pop->meta);
+			if (popOriginal != NULL)
+				CbHeapFree(pop);
+		}
+	} else {
+		s_UninitSyncIOMetadata(&pop->meta);
+	}
 	return status;
 }
 
@@ -557,9 +635,23 @@ static BOOL __stdcall s_LocalSyncIOThreadCtor(PHANDLE phThread) {
 	NTSTATUS status;
 	CLIENT_ID client;
 
-	status = RtlCreateUserThread(CB_CURRENT_PROCESS, NULL, FALSE, 0, NULL, NULL, MwAPCProcessingThreadProc, NULL, phThread, &client);
+	status = RtlCreateUserThread(CB_CURRENT_PROCESS, NULL, TRUE, 0, NULL, NULL, MwAPCProcessingThreadProc, NULL, phThread, &client);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_LocalSyncIOThreadCtor] RtlCreateUserThread returned 0x%08X\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
+
+	status = s_SetThreadAsNoIntercept((DWORD)client.UniqueThread);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_LocalSyncIOThreadCtor] s_SetThreadAsNoIntercept returned 0x%08X\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
+
+	status = NtResumeThread(*phThread, NULL);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_LocalSyncIOThreadCtor] NtResumeThread returned 0x%08X\r\n", status);
 		CbLastWinAPIError = RtlNtStatusToDosError(status);
 		return FALSE;
 	}
@@ -671,7 +763,7 @@ static void s_InitReadWriteOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE
 	}
 }
 
-static void s_InitIOControlIo(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
+static void s_InitIOControlOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
 	PIO_STATUS_BLOCK piosb, ULONG nIOCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen)
 {
 	RtlSecureZeroMemory(pop, sizeof(*pop));
@@ -686,4 +778,77 @@ static void s_InitIOControlIo(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE
 	pop->IOControl.nInBufLen = nInBufLen;
 	pop->IOControl.pOutBuf = pOutBuf;
 	pop->IOControl.nOutBufLen = nOutBufLen;
+}
+
+static NTSTATUS s_SetThreadAsNoIntercept(DWORD nThreadID) {
+	NTSTATUS status;
+	HANDLE hThread = NULL;
+	OBJECT_ATTRIBUTES attrib;
+	CLIENT_ID client;
+
+	if (nThreadID == 0)
+		return STATUS_INVALID_PARAMETER_1;
+
+	RtlSecureZeroMemory(&attrib, sizeof(attrib));
+	attrib.Length = sizeof(attrib);
+	client.UniqueProcess = CbGetTEB()->ClientId.UniqueProcess;
+	client.UniqueThread = nThreadID;
+
+	status = NtOpenThread(&hThread, SYNCHRONIZE, &attrib, &client);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_SetThreadAsNoIntercept] NtOpenThread failed with error 0x%08X\r\n", status);
+		return status;
+	}
+
+	CbAcquireSpinLockYielding(&s_lockNoInterceptList);
+
+	__try {
+		if (avl_search(&s_treeNoIntercept, (void*)nThreadID) == NULL)
+			avl_insert(&s_treeNoIntercept, (void*)nThreadID, (void*)hThread);
+
+		if (avl_search(&s_treeNoIntercept, (void*)nThreadID) == NULL)
+			status = STATUS_NO_MEMORY;
+		else
+			status = 0;
+	} __finally {
+		CbReleaseSpinLock(&s_lockNoInterceptList);
+
+		if (status != 0)
+			NtClose(hThread);
+	}
+
+	return status;
+}
+
+static NTSTATUS s_UnsetThreadAsNoIntercept(DWORD nThreadID) {
+	HANDLE hThread = NULL;
+
+	CbAcquireSpinLockYielding(&s_lockNoInterceptList);
+	__try {
+		hThread = avl_remove(&s_treeNoIntercept, nThreadID);
+	} __finally {
+		CbReleaseSpinLock(&s_lockNoInterceptList);
+	}
+
+	if (hThread != NULL) {
+		NtClose(hThread);
+		return 0;
+	} else
+		return STATUS_NOT_FOUND;
+}
+
+static NTSTATUS s_CheckNoInterceptStatus(PBOOL pbNoIntercept) {
+	CbAcquireSpinLockYielding(&s_lockNoInterceptList);
+	__try {
+		*pbNoIntercept = avl_search(&s_treeNoIntercept, (void*)CbGetTEB()->ClientId.UniqueThread) != NULL;
+	} __finally {
+		CbReleaseSpinLock(&s_lockNoInterceptList);
+	}
+	return 0;
+}
+
+static void s_NullKeyDtor(void* key) { }
+
+static void s_HandleClosingValueDtor(void* key, HANDLE hValue) {
+	NtClose(hValue);
 }

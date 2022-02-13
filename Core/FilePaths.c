@@ -133,7 +133,7 @@ size_t wcstombs(char* pszDest, const wchar_t* pwzSrc, size_t nMax) {
 	ANSI_STRING asDest;
 
 	usSrc.Buffer = (LPWSTR)pwzSrc;
-	usSrc.Length = (USHORT)wcslen(pwzSrc);
+	usSrc.Length = (USHORT)(wcslen(pwzSrc) * sizeof(wchar_t));
 	usSrc.MaximumLength = usSrc.Length;
 
 	asDest.Buffer = pszDest;
@@ -157,7 +157,7 @@ size_t mbstowcs(wchar_t* pwzDest, const char* pszSrc, size_t nMax) {
 
 	usDest.Buffer = pwzDest;
 	usDest.Length = 0;
-	usDest.MaximumLength = (USHORT)(nMax - 1);
+	usDest.MaximumLength = (USHORT)((nMax - 1) * sizeof(wchar_t));
 
 	if (RtlAnsiStringToUnicodeString(&usDest, &asSrc, FALSE))
 		return (size_t)-1;

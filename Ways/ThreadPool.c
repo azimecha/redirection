@@ -69,7 +69,7 @@ void MAGICWAYS_EXPORTED MwReturnPoolThread(HANDLE hThread) {
 	CbReleaseSpinLock(&s_lock);
 }
 
-MAGICWAYS_EXPORTED DWORD __stdcall MwAPCProcessingThreadProc(PVOID pParams) {
+DWORD MAGICWAYS_EXPORTED MwAPCProcessingThreadProc(PVOID pParams) {
 	NTSTATUS status;
 	LARGE_INTEGER liTimeout;
 
