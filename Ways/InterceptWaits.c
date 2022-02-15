@@ -112,7 +112,6 @@ static void s_InitReadWriteOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE
 static void s_InitIOControlOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
 	PIO_STATUS_BLOCK piosb, ULONG nIOCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen);
 
-static NTSTATUS s_SetThreadAsNoIntercept(DWORD nThreadID);
 static NTSTATUS s_UnsetThreadAsNoIntercept(DWORD nThreadID);
 static NTSTATUS s_CheckNoInterceptStatus(PBOOL pbNoIntercept);
 
@@ -483,6 +482,14 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 		return status;
 	}
 
+	if (pop->hEvent != NULL) {
+		status = NtResetEvent(pop->hEvent, NULL);
+		if (CB_NT_FAILED(status)) {
+			DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X resetting event 0x%08X\r\n", status, pop->hEvent);
+			goto L_exit;
+		}
+	}
+
 	status = s_CheckMode(pop->hFile, &mode);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X querying mode\r\n", status);
@@ -500,6 +507,7 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 			status = STATUS_NO_MEMORY;
 			goto L_exit;
 		}
+		memcpy(pop, popOriginal, sizeof(*pop));
 		break;
 
 	case MwWaitsFileMode_SyncAlert:
@@ -642,9 +650,9 @@ static BOOL __stdcall s_LocalSyncIOThreadCtor(PHANDLE phThread) {
 		return FALSE;
 	}
 
-	status = s_SetThreadAsNoIntercept((DWORD)client.UniqueThread);
+	status = DisableIOInterception((DWORD)client.UniqueThread);
 	if (CB_NT_FAILED(status)) {
-		DbgPrint("[InterceptWaits:s_LocalSyncIOThreadCtor] s_SetThreadAsNoIntercept returned 0x%08X\r\n", status);
+		DbgPrint("[InterceptWaits:s_LocalSyncIOThreadCtor] DisableIOInterception returned 0x%08X\r\n", status);
 		CbLastWinAPIError = RtlNtStatusToDosError(status);
 		return FALSE;
 	}
@@ -697,13 +705,13 @@ static NTSTATUS s_InitAsyncIOMetadata(PMW_WAITS_IO_METADATA pmeta) {
 		goto L_errorexit;
 	}
 
-	status = NtCreateEvent(&pmeta->hTaskCompleteEvent, EVENT_ALL_ACCESS, NULL, SynchronizationEvent, FALSE);
+	status = NtCreateEvent(&pmeta->hTaskCompleteEvent, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_InitAsyncIOMetadata] NtCreateEvent for hTaskCompleteEvent returned 0x%08X\r\n", status);
 		goto L_errorexit;
 	}
 
-	status = NtCreateEvent(&pmeta->hTaskCancelledEvent, EVENT_ALL_ACCESS, NULL, SynchronizationEvent, FALSE);
+	status = NtCreateEvent(&pmeta->hTaskCancelledEvent, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_InitAsyncIOMetadata] NtCreateEvent for hTaskCancelledEvent returned 0x%08X\r\n", status);
 		goto L_errorexit;
@@ -780,7 +788,7 @@ static void s_InitIOControlOp(PMW_WAITS_IO_OP pop, HANDLE hFile, OPTIONAL HANDLE
 	pop->IOControl.nOutBufLen = nOutBufLen;
 }
 
-static NTSTATUS s_SetThreadAsNoIntercept(DWORD nThreadID) {
+NTSTATUS DisableIOInterception(DWORD nThreadID) {
 	NTSTATUS status;
 	HANDLE hThread = NULL;
 	OBJECT_ATTRIBUTES attrib;
@@ -796,7 +804,7 @@ static NTSTATUS s_SetThreadAsNoIntercept(DWORD nThreadID) {
 
 	status = NtOpenThread(&hThread, SYNCHRONIZE, &attrib, &client);
 	if (CB_NT_FAILED(status)) {
-		DbgPrint("[InterceptWaits:s_SetThreadAsNoIntercept] NtOpenThread failed with error 0x%08X\r\n", status);
+		DbgPrint("[InterceptWaits:DisableIOInterception] NtOpenThread failed with error 0x%08X\r\n", status);
 		return status;
 	}
 

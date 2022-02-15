@@ -729,6 +729,7 @@ NTSTATUS __stdcall NtResumeThread(HANDLE hThread, OUT OPTIONAL PULONG pnRemainin
 NTSTATUS __stdcall NtOpenThread(OUT PHANDLE phThread, ACCESS_MASK maskAccess, POBJECT_ATTRIBUTES pAttribs, CLIENT_ID* pThreadID);
 NTSTATUS __stdcall NtDelayExecution(BOOLEAN bAlertable, PLARGE_INTEGER pliTimeout);
 NTSTATUS __stdcall NtSetEvent(HANDLE hEvent, OPTIONAL OUT PULONG pnPrevState);
+NTSTATUS __stdcall NtResetEvent(HANDLE hEvent, OPTIONAL OUT PULONG pnPrevState);
 NTSTATUS __stdcall NtWaitForMultipleObjects(ULONG nCount, PHANDLE phObjects, OBJECT_WAIT_TYPE nWaitType, BOOLEAN bAlertable, 
 	OPTIONAL PLARGE_INTEGER pliTimeout);
 NTSTATUS __stdcall NtQueueApcThread(HANDLE hThread, PIO_APC_ROUTINE procAPC, OPTIONAL PVOID pAPCParam, OPTIONAL PIO_STATUS_BLOCK piosbForAPC,

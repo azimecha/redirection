@@ -1,4 +1,5 @@
 #include "ThreadPool.h"
+#include "InterceptWaits.h"
 #include <NTDLL.h>
 #include <ThreadOps.h>
 
@@ -34,14 +35,35 @@ HANDLE MAGICWAYS_EXPORTED MwGetPoolThread(void) {
 	}
 
 	// else, create a new thread
-	status = RtlCreateUserThread(CB_CURRENT_PROCESS, NULL, FALSE, 0, NULL, NULL, MwAPCProcessingThreadProc, NULL, &hThread, &client);
+	status = RtlCreateUserThread(CB_CURRENT_PROCESS, NULL, TRUE, 0, NULL, NULL, MwAPCProcessingThreadProc, NULL, &hThread, &client);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[ThreadPool:MwGetPoolThread] RtlCreateUserThread returned status 0x%08X\r\n", status);
 		CbLastWinAPIError = RtlNtStatusToDosError(status);
 		return NULL;
 	}
 
+	status = DisableIOInterception(client.UniqueThread);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ThreadPool:MwGetPoolThread] DisableIOInterception returned status 0x%08X\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		goto L_cancel;
+	}
+
+	status = NtResumeThread(hThread, NULL);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ThreadPool:MwGetPoolThread] NtResumeThread returned status 0x%08X\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		goto L_cancel;
+	}
+
 	return hThread;
+
+L_cancel:
+	status = NtTerminateThread(hThread, STATUS_CANCELLED);
+	if (CB_NT_FAILED(status))
+		DbgPrint("[ThreadPool:MwGetPoolThread] NtTerminateThread returned status 0x%08X\r\n", status);
+	NtClose(hThread);
+	return NULL;
 }
 
 void MAGICWAYS_EXPORTED MwReturnPoolThread(HANDLE hThread) {

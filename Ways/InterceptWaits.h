@@ -7,5 +7,6 @@
 #include <minwindef.h>
 
 BOOL ApplyWaitHooks(void);
+DWORD DisableIOInterception(DWORD nThreadID);
 
 #endif
