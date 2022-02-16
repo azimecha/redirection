@@ -1,7 +1,7 @@
 #include "InterceptDLLs.h"
 #include "InterceptEXEs.h"
+#include "InterceptIO.h"
 #include "ThreadLocal.h"
-#include "InterceptWaits.h"
 #include <NTDLL.h>
 
 #define _X86_
@@ -18,7 +18,7 @@ BOOL WINAPI ENTRY_POINT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) 
         }
         if (InterlockedCompareExchange(&s_bDidApplyHooks, 1, 0) == 0) {
             CbDisplayMessageW(L"Magic Ways", L"DLL loaded, press OK when attached.", CbSeverityInfo);
-            return ApplyLibraryLoadHooks() && ApplyProcessCreationHooks() && ApplyWaitHooks();
+            return ApplyLibraryLoadHooks() && ApplyProcessCreationHooks() && ApplyIOHooks();
         }
         break;
 

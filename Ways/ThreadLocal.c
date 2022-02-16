@@ -61,6 +61,7 @@ BOOL TLSInitProcess(void) {
 	s_nIndex = TlsAlloc();
 	if (s_nIndex == (DWORD)-1)
 		return FALSE;
+	return TRUE;
 }
 
 BOOL TLSInitThread(void) {

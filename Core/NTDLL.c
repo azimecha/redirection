@@ -92,6 +92,7 @@ CB_NTDLL_DEFINE(NtCreateEvent, (PHANDLE a, ACCESS_MASK b, OPTIONAL POBJECT_ATTRI
 CB_NTDLL_DEFINE(NtTerminateThread, (HANDLE a, NTSTATUS b), (a, b));
 CB_NTDLL_DEFINE(NtYieldExecution, (void), ());
 CB_NTDLL_DEFINE(NtWaitForSingleObject, (HANDLE a, BOOLEAN b, OPTIONAL PLARGE_INTEGER c), (a, b, c));
+CB_NTDLL_DEFINE(NtQueryInformationThread, (HANDLE a, THREAD_INFORMATION_CLASS_FULL b, OUT PVOID c, ULONG d, OUT PULONG e), (a, b, c, d, e));
 
 CB_NTDLL_DEFINE_ALT(PVOID, RtlCreateHeap, (ULONG a, OPTIONAL PVOID b, OPTIONAL SIZE_T c, OPTIONAL SIZE_T d, OPTIONAL PVOID e,
 	OPTIONAL PVOID f), (a, b, c, d, e, f));
@@ -100,6 +101,10 @@ CB_NTDLL_DEFINE_ALT(BOOL, RtlFreeHeap, (PVOID a, OPTIONAL ULONG b, PVOID c), (a,
 CB_NTDLL_DEFINE_ALT(PVOID, RtlDestroyHeap, (PVOID a), (a));
 CB_NTDLL_DEFINE(RtlCreateUserThread, (HANDLE a, OPTIONAL PSECURITY_DESCRIPTOR b, BOOLEAN c, ULONG d, OUT PULONG e, OUT PULONG f,
 	CbNtThreadProc_t g, OPTIONAL PVOID h, OUT PHANDLE i, OUT CLIENT_ID* j), (a, b, c, d, e, f, g, h, i, j));
+CB_NTDLL_DEFINE(RtlInitializeCriticalSection, (PRTL_CRITICAL_SECTION a), (a));
+CB_NTDLL_DEFINE(RtlEnterCriticalSection, (PRTL_CRITICAL_SECTION a), (a));
+CB_NTDLL_DEFINE(RtlLeaveCriticalSection, (PRTL_CRITICAL_SECTION a), (a));
+CB_NTDLL_DEFINE(RtlDeleteCriticalSection, (PRTL_CRITICAL_SECTION a), (a));
 
 CB_NTDLL_DEFINE_VOID(RtlAcquirePebLock, (), ());
 CB_NTDLL_DEFINE_VOID(RtlReleasePebLock, (), ());

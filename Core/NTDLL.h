@@ -626,6 +626,36 @@ typedef enum _EVENT_TYPE {
 	SynchronizationEvent
 } EVENT_TYPE, * PEVENT_TYPE;
 
+typedef struct _THREAD_BASIC_INFORMATION {
+	NTSTATUS ExitStatus;
+	PVOID TEBBaseAddress;
+	CLIENT_ID ClientID;
+	ULONG_PTR AffinityMask;
+	LONG Priority;
+	LONG BasePriority;
+} THREAD_BASIC_INFORMATION, * PTHREAD_BASIC_INFORMATION;
+
+typedef enum _THREAD_INFORMATION_CLASS_FULL {
+	ThreadBasicInformation,
+	ThreadTimes,
+	ThreadPriority,
+	ThreadBasePriority,
+	ThreadAffinityMask,
+	ThreadImpersonationToken,
+	ThreadDescriptorTableEntry,
+	ThreadEnableAlignmentFaultFixup,
+	ThreadEventPair,
+	ThreadQuerySetWin32StartAddress,
+	ThreadZeroTlsCell,
+	ThreadPerformanceCount,
+	ThreadAmILastThread,
+	ThreadIdealProcessor,
+	ThreadPriorityBoost,
+	ThreadSetTlsArrayAddress,
+	ThreadIsIoPending,
+	ThreadHideFromDebugger
+} THREAD_INFORMATION_CLASS_FULL, * PTHREAD_INFORMATION_CLASS_FULL;
+
 typedef void(__stdcall* PIO_APC_ROUTINE)(PVOID pAPCContext, PIO_STATUS_BLOCK piosb, ULONG nReserved);
 
 typedef NTSTATUS(__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize,
@@ -739,6 +769,8 @@ NTSTATUS __stdcall NtCreateEvent(PHANDLE phEvent, ACCESS_MASK access, OPTIONAL P
 NTSTATUS __stdcall NtTerminateThread(HANDLE hThread, NTSTATUS statusThreadExit);
 NTSTATUS __stdcall NtYieldExecution(void);
 NTSTATUS __stdcall NtWaitForSingleObject(HANDLE hObject, BOOLEAN bAlertable, OPTIONAL PLARGE_INTEGER pliTimeout);
+NTSTATUS __stdcall NtQueryInformationThread(HANDLE hThread, THREAD_INFORMATION_CLASS_FULL iclass, OUT PVOID pInfo, ULONG nInfoMaxSize,
+	OUT PULONG pnInfoSize);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
@@ -750,6 +782,10 @@ ULONG __stdcall RtlGetFullPathName_U(PCWSTR pcwzFileName, ULONG nBufSize, OUT PW
 NTSTATUS __stdcall RtlCreateUserThread(HANDLE hProcess, OPTIONAL PSECURITY_DESCRIPTOR psd, BOOLEAN bCreateSus, ULONG nStackZeroBits,
 	OUT PULONG pnStackReserved, OUT PULONG pnStackCommit, CbNtThreadProc_t pStartAddress, OPTIONAL PVOID pStartParam, OUT PHANDLE phThread,
 	OUT CLIENT_ID* pClientID);
+NTSTATUS __stdcall RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION pcs);
+NTSTATUS __stdcall RtlEnterCriticalSection(PRTL_CRITICAL_SECTION pcs);
+NTSTATUS __stdcall RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION pcs);
+NTSTATUS __stdcall RtlDeleteCriticalSection(PRTL_CRITICAL_SECTION pcs);
 
 PVOID __stdcall RtlCreateHeap(ULONG flags, OPTIONAL PVOID pBase, OPTIONAL SIZE_T nReserveSize, OPTIONAL SIZE_T nCommitSize, OPTIONAL PVOID pLock, 
 	OPTIONAL PVOID pParams);

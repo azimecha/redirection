@@ -1,3 +1,4 @@
+#include "InterceptIO.h"
 #include "ThreadLocal.h"
 #include "ThreadPool.h"
 #include <HookFunction.h>
@@ -28,6 +29,7 @@ typedef NTSTATUS(* MW_WAITS_IO_PROC)(struct _MW_WAITS_IO_OP* pop);
 typedef struct _MW_WAITS_IO_METADATA {
 	HANDLE hTaskCompleteEvent, hTaskCancelledEvent, hOriginalThread, hNewThread;
 	NTSTATUS statusTaskResult;
+	MW_WAITS_FILE_MODE mode;
 } MW_WAITS_IO_METADATA, *PMW_WAITS_IO_METADATA;
 
 typedef struct _MW_WAITS_IO_OP {
@@ -96,7 +98,7 @@ static void __stdcall s_SetThreadAsNoInterceptProc(PMW_WAITS_IO_OP pop, PIO_STAT
 
 static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop);
 
-static NTSTATUS s_InitSyncIOMetadata(PMW_WAITS_IO_METADATA pmeta);
+static NTSTATUS s_InitSyncIOMetadata(PMW_WAITS_IO_METADATA pmeta, MW_WAITS_FILE_MODE mode);
 static NTSTATUS s_UninitSyncIOMetadata(PMW_WAITS_IO_METADATA pmeta);
 static BOOL __stdcall s_LocalEventCtor(PHANDLE phEvent);
 static BOOL __stdcall s_LocalSyncIOThreadCtor(PHANDLE phThread);
@@ -117,11 +119,18 @@ static NTSTATUS s_CheckNoInterceptStatus(PBOOL pbNoIntercept);
 
 static void s_NullKeyDtor(void* key);
 static void s_HandleClosingValueDtor(void* key, HANDLE hValue);
+static void s_NullKeyValueDtor(void* key, void* value);
+
+static NTSTATUS s_RegisterIO(PMW_WAITS_IO_OP pop);
+static void s_UnregisterIO(PMW_WAITS_IO_OP pop);
+static NTSTATUS s_SetTreeInsert(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, void* key, void* value);
+static void s_SetTreeRemove(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, void* key, void* value);
 
 static const GUID s_idSyncIOCompleteEvent = { 0x19345D63, 0x00ED, 0x40B5, {0x94, 0x52, 0x83, 0x25, 0x29, 0x00, 0x38, 0xDF} };
 static const GUID s_idSyncIOCancelledEvent = { 0xE81C2100, 0x22CA, 0x45FE, {0x89, 0xC8, 0x84, 0xE4, 0x2E, 0xDA, 0xC6, 0xAF} };
 static const GUID s_idOrigThreadHandle = { 0xF2B66FCA, 0x76BB, 0x49E6, {0x8C, 0x13, 0x4E, 0x3B, 0xB6, 0x44, 0x74, 0x4C} };
 static const GUID s_idSyncIOThreadHandle = { 0x1B31D371, 0xF2F0, 0x4F3D, {0xB8, 0xF9, 0xA4, 0xB8, 0xAC, 0xE6, 0x06, 0x73} };
+static const GUID s_idNoInterceptEntry = { 0x673CD649, 0xA478, 0x4D29, {0x9F, 0x00, 0x74, 0xA0, 0xAC, 0xE8, 0xEA, 0x4B} };
 
 static NtReadFile_t s_procNtReadFile = NULL;
 static NtReadFileScatter_t s_procNtReadFileScatter = NULL;
@@ -130,8 +139,21 @@ static NtWriteFileGather_t s_procNtWriteFileGather = NULL;
 static NtDeviceIoControlFile_t s_procNtDeviceIoControlFile = NULL;
 static NtFsControlFile_t s_procNtFsControlFile = NULL;
 
+// key: thread ID, value: thread handle
 static avl_tree_t s_treeNoIntercept = { 0 }; // TODO: Removing dead threads
 static CbSpinLock_t s_lockNoInterceptList = CB_SPINLOCK_INITIAL;
+
+// key: pointer to IO_STATUS_BLOCK, value: pointer to IO op struct
+static avl_tree_t s_treeStatusBlocks = { 0 };
+static RTL_CRITICAL_SECTION s_csStatusBlocksTree;
+
+// key: handle, value: tree (key: pointer to IO op struct, value: nothing)
+static avl_tree_t s_treeObjectOps = { 0 };
+static RTL_CRITICAL_SECTION s_csObjectOpsTree;
+
+// key: thread ID, value: tree (key: pointer to IO op struct, value: nothing)
+static avl_tree_t s_treeThreadOps = { 0 };
+static RTL_CRITICAL_SECTION s_csThreadOpsTree;
 
 static MW_WAITS_TARGET s_arrToIntercept[] = {
 	MW_WAITS_TARGET_NAMED(ReadFile),
@@ -142,29 +164,54 @@ static MW_WAITS_TARGET s_arrToIntercept[] = {
 	MW_WAITS_TARGET_NAMED(FsControlFile)
 };
 
-BOOL ApplyWaitHooks(void) {
+BOOL ApplyIOHooks(void) {
 	SIZE_T nTarget;
 	PMW_WAITS_TARGET pTargetInfo;
 	PVOID pLocation;
+	NTSTATUS status;
 
 	avl_initialize(&s_treeNoIntercept, avl_ptrcmp, s_NullKeyDtor);
+	avl_initialize(&s_treeStatusBlocks, avl_ptrcmp, s_NullKeyDtor);
+	avl_initialize(&s_treeObjectOps, avl_ptrcmp, s_NullKeyDtor);
+	avl_initialize(&s_treeThreadOps, avl_ptrcmp, s_NullKeyDtor);
+
+	status = RtlInitializeCriticalSection(&s_csStatusBlocksTree);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ApplyIOHooks] Error 0x%08X initializing status block tree critical section\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
+
+	status = RtlInitializeCriticalSection(&s_csObjectOpsTree);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ApplyIOHooks] Error 0x%08X initializing object ops tree critical section\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
+
+	status = RtlInitializeCriticalSection(&s_csThreadOpsTree);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ApplyIOHooks] Error 0x%08X initializing thread ops tree critical section\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return FALSE;
+	}
 
 	for (nTarget = 0; nTarget < RTL_NUMBER_OF_V2(s_arrToIntercept); nTarget++) {
 		pTargetInfo = &s_arrToIntercept[nTarget];
 
 		pLocation = CbGetNTDLLFunction(pTargetInfo->pcszName);
 		if (pLocation == NULL) {
-			DbgPrint("[ApplyWaitHooks] %s not found!\r\n", pTargetInfo->pcszName);
+			DbgPrint("[ApplyIOHooks] %s not found!\r\n", pTargetInfo->pcszName);
 			return FALSE;
 		}
 
 		*pTargetInfo->ppOrigStorage = PaHookSimpleFunction(pLocation, 16, pTargetInfo->pNewFunc);
 		if (*pTargetInfo->ppOrigStorage == NULL) {
-			DbgPrint("[ApplyWaitHooks] PaHookSimpleFunction failed on %s with error 0x%08X!\r\n", pTargetInfo->pcszName, CbLastWinAPIError);
+			DbgPrint("[ApplyIOHooks] PaHookSimpleFunction failed on %s with error 0x%08X!\r\n", pTargetInfo->pcszName, CbLastWinAPIError);
 			return FALSE;
 		}
 
-		DbgPrint("[ApplyWaitHooks] Hooked %s at 0x%08X with function at 0x%08X - original stored at 0x%08X\r\n", pTargetInfo->pcszName,
+		DbgPrint("[ApplyIOHooks] Hooked %s at 0x%08X with function at 0x%08X - original stored at 0x%08X\r\n", pTargetInfo->pcszName,
 			pLocation, pTargetInfo->pNewFunc, *pTargetInfo->ppOrigStorage);
 	}
 
@@ -404,6 +451,7 @@ L_complete:
 			DbgPrint("[InterceptWaits:s_OverlappedIOObserverProc] NtSetEvent returned status 0x%08X! User event not signaled!\r\n", status);
 	}
 
+	s_UnregisterIO(pop);
 	s_UninitAsyncIOMetadata(&pop->meta);
 	CbHeapFree(pop);
 }
@@ -454,7 +502,6 @@ static void __stdcall s_AlertableIOCancelProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BL
 	status = NtCancelIoFile(pop->hFile, &iosb);
 	if (CB_NT_FAILED(status))
 		DbgPrint("[InterceptWaits:s_AlertableIOCancelProc] NtCancelIoFile returned 0x%08X\r\n", status);
-
 }
 
 static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
@@ -524,16 +571,22 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 		goto L_exit;
 	}
 
-	status = (mode == MwWaitsFileMode_Overlapped) ? s_InitAsyncIOMetadata(&pop->meta) : s_InitSyncIOMetadata(&pop->meta);
+	status = (mode == MwWaitsFileMode_Overlapped) ? s_InitAsyncIOMetadata(&pop->meta) : s_InitSyncIOMetadata(&pop->meta, mode);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X initializing I/O metadata\r\n", status);
 		goto L_exit;
 	}
 
+	status = s_RegisterIO(pop);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_PerformIO] Error 0x%08X registering I/O operation\r\n", status);
+		goto L_exit_metainited;
+	}
+
 	status = NtQueueApcThread(pop->meta.hNewThread, procAPC, pop, pop->piosb, 0);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_PerformIO] NtQueueApcThread returned status 0x%08X\r\n", status);
-		goto L_exit;
+		goto L_exit_registered;
 	}
 
 	switch (mode) {
@@ -570,7 +623,10 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 
 	bSucc = TRUE;
 
-L_exit:
+L_exit_registered:
+	if (!(bSucc && (mode == MwWaitsFileMode_Overlapped)))
+		s_UnregisterIO(pop);
+L_exit_metainited:
 	if (mode == MwWaitsFileMode_Overlapped) {
 		if (!bSucc) {
 			s_UninitAsyncIOMetadata(&pop->meta);
@@ -580,36 +636,39 @@ L_exit:
 	} else {
 		s_UninitSyncIOMetadata(&pop->meta);
 	}
+L_exit:
 	return status;
 }
 
-static NTSTATUS s_InitSyncIOMetadata(PMW_WAITS_IO_METADATA pmeta) {
+static NTSTATUS s_InitSyncIOMetadata(PMW_WAITS_IO_METADATA pmeta, MW_WAITS_FILE_MODE mode) {
 	PHANDLE phObject;
+
+	pmeta->mode = mode;
 
 	phObject = MwGetTLS(&s_idOrigThreadHandle, sizeof(HANDLE), s_LocalThreadHandleCtor, s_LocalHandleDtor, "InterceptWaits orig thread");
 	if (phObject == NULL) {
-		DbgPrint("[InterceptWaits:s_AlertableIOCancelProc] MwGetTLS for hOriginalThread failed with error 0x%08X\r\n", CbLastWinAPIError);
+		DbgPrint("[InterceptWaits:s_InitSyncIOMetadata] MwGetTLS for hOriginalThread failed with error 0x%08X\r\n", CbLastWinAPIError);
 		return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 	}
 	pmeta->hOriginalThread = *phObject;
 
 	phObject = MwGetTLS(&s_idSyncIOCancelledEvent, sizeof(HANDLE), s_LocalEventCtor, s_LocalHandleDtor, "InterceptWaits cancel evt");
 	if (phObject == NULL) {
-		DbgPrint("[InterceptWaits:s_AlertableIOCancelProc] MwGetTLS for hTaskCancelledEvent failed with error 0x%08X\r\n", CbLastWinAPIError);
+		DbgPrint("[InterceptWaits:s_InitSyncIOMetadata] MwGetTLS for hTaskCancelledEvent failed with error 0x%08X\r\n", CbLastWinAPIError);
 		return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 	}
 	pmeta->hTaskCancelledEvent = *phObject;
 
 	phObject = MwGetTLS(&s_idSyncIOCompleteEvent, sizeof(HANDLE), s_LocalEventCtor, s_LocalHandleDtor, "InterceptWaits complete evt");
 	if (phObject == NULL) {
-		DbgPrint("[InterceptWaits:s_AlertableIOCancelProc] MwGetTLS for hTaskCompleteEvent failed with error 0x%08X\r\n", CbLastWinAPIError);
+		DbgPrint("[InterceptWaits:s_InitSyncIOMetadata] MwGetTLS for hTaskCompleteEvent failed with error 0x%08X\r\n", CbLastWinAPIError);
 		return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 	}
 	pmeta->hTaskCompleteEvent = *phObject;
 
 	phObject = MwGetTLS(&s_idSyncIOThreadHandle, sizeof(HANDLE), s_LocalSyncIOThreadCtor, s_LocalSyncIOThreadDtor, "InterceptWaits I/O thread");
 	if (phObject == NULL) {
-		DbgPrint("[InterceptWaits:s_AlertableIOCancelProc] MwGetTLS for hNewThread failed with error 0x%08X\r\n", CbLastWinAPIError);
+		DbgPrint("[InterceptWaits:s_InitSyncIOMetadata] MwGetTLS for hNewThread failed with error 0x%08X\r\n", CbLastWinAPIError);
 		return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 	}
 	pmeta->hNewThread = *phObject;
@@ -698,6 +757,7 @@ static NTSTATUS s_InitAsyncIOMetadata(PMW_WAITS_IO_METADATA pmeta) {
 	NTSTATUS status;
 
 	RtlSecureZeroMemory(pmeta, sizeof(*pmeta));
+	pmeta->mode = MwWaitsFileMode_Overlapped;
 
 	status = CbOpenCurrentThread(&pmeta->hOriginalThread);
 	if (CB_NT_FAILED(status)) {
@@ -859,4 +919,176 @@ static void s_NullKeyDtor(void* key) { }
 
 static void s_HandleClosingValueDtor(void* key, HANDLE hValue) {
 	NtClose(hValue);
+}
+
+static void s_NullKeyValueDtor(void* key, void* value) { }
+
+#ifdef _MSC_VER
+#pragma warning(disable:26115)
+#pragma warning(disable:6242)
+#endif
+
+static NTSTATUS s_RegisterIO(PMW_WAITS_IO_OP pop) {
+	NTSTATUS status, statusLeave;
+	BOOLEAN bAllFinishedOK = FALSE;
+	THREAD_BASIC_INFORMATION infThread;
+	ULONG nThreadInfoSize;
+
+	status = NtQueryInformationThread(pop->meta.hOriginalThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nThreadInfoSize);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptIO:s_RegisterIO] NtQueryInformationThread returned status 0x%08X\r\n", status);
+		return status;
+	}
+
+	__try {
+		status = s_SetTreeInsert(&s_csObjectOpsTree, &s_treeObjectOps, pop->hFile, pop);
+		if (CB_NT_FAILED(status)) {
+			DbgPrint("[InterceptIO:s_RegisterIO] DoubleLayerTreeInsert for object ops tree returned status 0x%08X\r\n", status);
+			return status;
+		}
+
+		status = s_SetTreeInsert(&s_csThreadOpsTree, &s_treeThreadOps, (void*)infThread.ClientID.UniqueThread, pop);
+		if (CB_NT_FAILED(status)) {
+			DbgPrint("[InterceptIO:s_RegisterIO] DoubleLayerTreeInsert for thread ops tree returned status 0x%08X\r\n", status);
+			return status;
+		}
+
+		if (pop->piosb) {
+			status = RtlEnterCriticalSection(&s_csStatusBlocksTree);
+			if (CB_NT_FAILED(status)) {
+				DbgPrint("[InterceptIO:s_RegisterIO] RtlEnterCriticalSection for status block tree returned status 0x%08X\r\n", status);
+				return status;
+			}
+
+			__try {
+				avl_insert(&s_treeStatusBlocks, pop->piosb, pop);
+				if (avl_search(&s_treeStatusBlocks, pop->piosb) == NULL) {
+					DbgPrint("[InterceptIO:s_RegisterIO] Error adding operation's status block to tree\r\n");
+					return STATUS_NO_MEMORY;
+				}
+			} __finally {
+				status = RtlLeaveCriticalSection(&s_csStatusBlocksTree);
+				if (CB_NT_FAILED(status))
+					DbgPrint("[InterceptIO:s_RegisterIO] RtlLeaveCriticalSection for status block returned status 0x%08X\r\n", status);
+			}
+		}
+
+		bAllFinishedOK = TRUE;
+	} __finally {
+		if (!bAllFinishedOK)
+			s_UnregisterIO(pop);
+	}
+
+	return 0;
+}
+
+static void s_UnregisterIO(PMW_WAITS_IO_OP pop) {
+	NTSTATUS status;
+
+	__try {
+		s_SetTreeRemove(&s_csObjectOpsTree, &s_treeObjectOps, pop->hFile, pop);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		DbgPrint("[InterceptIO:s_RegisterIO] Exception 0x%08X removing operation from object ops tree\r\n", GetExceptionCode());
+	}
+
+	__try {
+		s_SetTreeRemove(&s_csThreadOpsTree, &s_treeThreadOps, pop->meta.hOriginalThread, pop);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		DbgPrint("[InterceptIO:s_RegisterIO] Exception 0x%08X removing operation from thread ops tree\r\n", GetExceptionCode());
+	}
+
+	if (pop->piosb) {
+		__try {
+			status = RtlEnterCriticalSection(&s_csStatusBlocksTree);
+			if (CB_NT_FAILED(status)) {
+				DbgPrint("[InterceptIO:s_RegisterIO] RtlEnterCriticalSection for status block tree returned status 0x%08X\r\n", status);
+				__leave;
+			}
+
+			__try {
+				avl_remove(&s_treeStatusBlocks, pop->piosb);
+			} __finally {
+				status = RtlLeaveCriticalSection(&s_csStatusBlocksTree);
+				if (CB_NT_FAILED(status))
+					DbgPrint("[InterceptIO:s_RegisterIO] RtlLeaveCriticalSection for status block tree returned status 0x%08X\r\n", status);
+			}
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			DbgPrint("[InterceptIO:s_RegisterIO] Exception 0x%08X removing operation from status block tree\r\n", GetExceptionCode());
+		}
+	}
+}
+
+// insert a value into a tree containing sets
+static NTSTATUS s_SetTreeInsert(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, void* key, void* value) {
+	NTSTATUS status;
+	avl_tree_t* ptreeInner;
+
+	status = RtlEnterCriticalSection(pcs);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptIO:s_SetTreeInsert] RtlEnterCriticalSection returned status 0x%08X\r\n", status);
+		return status;
+	}
+
+	__try {
+		ptreeInner = avl_search(ptreeOuter, key);
+		if (ptreeInner == NULL) {
+			ptreeInner = CbHeapAllocate(sizeof(avl_tree_t), 1);
+			if (ptreeInner == NULL) {
+				DbgPrint("[InterceptIO:s_SetTreeInsert] CbHeapAllocate of %u bytes failed\r\n", sizeof(avl_tree_t));
+				status = STATUS_NO_MEMORY;
+				__leave;
+			}
+
+			avl_initialize(ptreeInner, avl_ptrcmp, s_NullKeyDtor);
+			avl_insert(ptreeOuter, key, ptreeInner);
+			if (avl_search(ptreeOuter, key) == NULL) {
+				DbgPrint("[InterceptIO:s_SetTreeInsert] Error adding new inner tree to outer tree\r\n");
+				status = STATUS_NO_MEMORY;
+				__leave;
+			}
+		}
+
+		avl_insert(ptreeInner, value, 1);
+		if (avl_search(ptreeInner, value) == NULL) {
+			DbgPrint("[InterceptIO:s_SetTreeInsert] Error adding value to inner tree\r\n");
+			status = STATUS_NO_MEMORY;
+			__leave;
+		}
+
+		status = 0;
+	} __finally {
+		status = RtlLeaveCriticalSection(pcs);
+		if (CB_NT_FAILED(status))
+			DbgPrint("[InterceptIO:s_SetTreeInsert] RtlLeaveCriticalSection returned status 0x%08X\r\n", status);
+	}
+
+	return status;
+}
+
+// remove a value from a tree containing sets
+static void s_SetTreeRemove(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, void* key, void* value) {
+	NTSTATUS status;
+	avl_tree_t* ptreeInner;
+
+	status = RtlEnterCriticalSection(pcs);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptIO:s_SetTreeRemove] RtlEnterCriticalSection returned status 0x%08X\r\n", status);
+		return;
+	}
+
+	__try {
+		ptreeInner = avl_search(ptreeOuter, key);
+		if (ptreeInner == NULL)
+			__leave;
+
+		avl_remove(ptreeInner, value);
+		if (ptreeInner->root == NULL) {
+			avl_remove(ptreeOuter, key);
+			CbHeapFree(ptreeInner);
+		}
+	} __finally {
+		status = RtlLeaveCriticalSection(pcs);
+		if (CB_NT_FAILED(status))
+			DbgPrint("[InterceptIO:s_SetTreeRemove] RtlLeaveCriticalSection returned status 0x%08X\r\n", status);
+	}
 }
