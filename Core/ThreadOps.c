@@ -73,6 +73,8 @@ static void s_ThreadNodeDtor(void* p1, void* p2) {
 	NtClose((HANDLE)p2);
 }
 
+static volatile LONG s_bInCritSec = 0;
+
 DWORD CbEnterSupercriticalSection(PVOID* ppData) {
 	PDWORD pThreadIDs = NULL;
 	ULONG nTotalThreads, nRunningThreads, nThread;
@@ -82,9 +84,14 @@ DWORD CbEnterSupercriticalSection(PVOID* ppData) {
 	CLIENT_ID idThread;
 	OBJECT_ATTRIBUTES attrib;
 
+	if (InterlockedCompareExchange(&s_bInCritSec, 1, 0) != 0)
+		return STATUS_ALREADY_COMMITTED;
+
 	pdicSusThreads = CbHeapAllocate(sizeof(avl_tree_t), FALSE);
-	if (pdicSusThreads == NULL)
-		return STATUS_NO_MEMORY;
+	if (pdicSusThreads == NULL) {
+		status = STATUS_NO_MEMORY;
+		goto L_exit;
+	}
 
 	avl_initialize(pdicSusThreads, avl_ptrcmp, s_NullKeyDtor);
 	idThread.UniqueProcess = 0;
@@ -132,7 +139,11 @@ DWORD CbEnterSupercriticalSection(PVOID* ppData) {
 	*ppData = pdicSusThreads;
 
 L_exit:
-	if (CB_NT_FAILED(status)) avl_destroy(pdicSusThreads, s_ThreadNodeDtor);
+	if (CB_NT_FAILED(status)) {
+		avl_destroy(pdicSusThreads, s_ThreadNodeDtor);
+		InterlockedExchange(&s_bInCritSec, 0);
+	}
+
 	if (pThreadIDs) CbHeapFree(pThreadIDs);
 	if (hThread) NtClose(hThread);
 	return status;
@@ -147,6 +158,8 @@ DWORD CbExitSupercriticalSection(PVOID pData) {
 
 	avl_destroy(pdicSusThreads, s_ThreadNodeDtor);
 	CbHeapFree(pdicSusThreads);
+
+	InterlockedExchange(&s_bInCritSec, 0);
 
 	return 0;
 }

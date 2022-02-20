@@ -15,6 +15,7 @@ typedef struct _MW_WAITS_TARGET {
 	LPCSTR pcszName;
 	PVOID* ppOrigStorage;
 	PVOID pNewFunc;
+	BOOLEAN bOptional;
 } MW_WAITS_TARGET, *PMW_WAITS_TARGET;
 
 typedef enum _MW_WAITS_FILE_MODE {
@@ -60,7 +61,10 @@ typedef struct _MW_WAITS_IO_OP {
 	};
 } MW_WAITS_IO_OP, *PMW_WAITS_IO_OP;
 
+typedef NTSTATUS(* TreeIterCallback_t)(LPVOID pUserData, void* pKey, void* pValue);
+
 #define MW_WAITS_TARGET_NAMED(n) { "Nt" #n, &s_procNt ##n, s_Ic ##n }
+#define MW_WAITS_OPTIONAL_TARGET_NAMED(n) { "Nt" #n, &s_procNt ##n, s_Ic ##n, TRUE }
 
 static NTSTATUS s_CheckMode(HANDLE hFile, OUT PMW_WAITS_FILE_MODE pnMode);
 
@@ -81,6 +85,12 @@ static NTSTATUS __stdcall s_IcDeviceIoControlFile(HANDLE hFile, OPTIONAL HANDLE 
 
 static NTSTATUS __stdcall s_IcFsControlFile(HANDLE hFile, OPTIONAL HANDLE hEvent, OPTIONAL PVOID pAPCRoutine, OPTIONAL PVOID pAPCContext,
 	PIO_STATUS_BLOCK piosb, ULONG nFSCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen);
+
+static NTSTATUS __stdcall s_IcCancelIoFile(HANDLE hFile, PIO_STATUS_BLOCK piosbCancellation);
+
+static NTSTATUS __stdcall s_IcCancelIoFileEx(HANDLE hFile, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation);
+
+static NTSTATUS __stdcall s_IcCancelSynchronousIoFile(HANDLE hThread, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation);
 
 static NTSTATUS s_ImplReadFile(PMW_WAITS_IO_OP pop);
 static NTSTATUS s_ImplReadFileScatter(PMW_WAITS_IO_OP pop);
@@ -123,8 +133,13 @@ static void s_NullKeyValueDtor(void* key, void* value);
 
 static NTSTATUS s_RegisterIO(PMW_WAITS_IO_OP pop);
 static void s_UnregisterIO(PMW_WAITS_IO_OP pop);
+
 static NTSTATUS s_SetTreeInsert(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, void* key, void* value);
 static void s_SetTreeRemove(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, void* key, void* value);
+static NTSTATUS s_TreeIterate(avl_tree_t* ptreeSet, TreeIterCallback_t procCallback, LPVOID pUserData);
+static NTSTATUS s_TreeIterateImpl(avl_tree_node_t* pnodeCur, TreeIterCallback_t procCallback, LPVOID pUserData);
+
+static NTSTATUS s_CancelIOCallback(LPVOID pIgnored1, PMW_WAITS_IO_OP pop, OPTIONAL UINT_PTR nRequiredThreadID);
 
 static const GUID s_idSyncIOCompleteEvent = { 0x19345D63, 0x00ED, 0x40B5, {0x94, 0x52, 0x83, 0x25, 0x29, 0x00, 0x38, 0xDF} };
 static const GUID s_idSyncIOCancelledEvent = { 0xE81C2100, 0x22CA, 0x45FE, {0x89, 0xC8, 0x84, 0xE4, 0x2E, 0xDA, 0xC6, 0xAF} };
@@ -138,6 +153,10 @@ static NtWriteFile_t s_procNtWriteFile = NULL;
 static NtWriteFileGather_t s_procNtWriteFileGather = NULL;
 static NtDeviceIoControlFile_t s_procNtDeviceIoControlFile = NULL;
 static NtFsControlFile_t s_procNtFsControlFile = NULL;
+
+static NtCancelIoFile_t s_procNtCancelIoFile = NULL;
+static NtCancelIoFileEx_t s_procNtCancelIoFileEx = NULL;
+static NtCancelSynchronousIoFile_t s_procNtCancelSynchronousIoFile = NULL;
 
 // key: thread ID, value: thread handle
 static avl_tree_t s_treeNoIntercept = { 0 }; // TODO: Removing dead threads
@@ -161,7 +180,10 @@ static MW_WAITS_TARGET s_arrToIntercept[] = {
 	MW_WAITS_TARGET_NAMED(WriteFile),
 	MW_WAITS_TARGET_NAMED(WriteFileGather),
 	MW_WAITS_TARGET_NAMED(DeviceIoControlFile),
-	MW_WAITS_TARGET_NAMED(FsControlFile)
+	MW_WAITS_TARGET_NAMED(FsControlFile),
+	MW_WAITS_TARGET_NAMED(CancelIoFile),
+	MW_WAITS_OPTIONAL_TARGET_NAMED(CancelIoFileEx),
+	MW_WAITS_OPTIONAL_TARGET_NAMED(CancelSynchronousIoFile)
 };
 
 BOOL ApplyIOHooks(void) {
@@ -201,6 +223,9 @@ BOOL ApplyIOHooks(void) {
 
 		pLocation = CbGetNTDLLFunction(pTargetInfo->pcszName);
 		if (pLocation == NULL) {
+			if (pTargetInfo->bOptional)
+				continue;
+
 			DbgPrint("[ApplyIOHooks] %s not found!\r\n", pTargetInfo->pcszName);
 			return FALSE;
 		}
@@ -270,6 +295,48 @@ static NTSTATUS __stdcall s_IcFsControlFile(HANDLE hFile, OPTIONAL HANDLE hEvent
 	s_InitIOControlOp(&op, hFile, hEvent, pAPCRoutine, pAPCContext, piosb, nFSCTL, pInBuf, nInBufLen, pOutBuf, nOutBufLen);
 	op.procDoActualIO = s_ImplFsControlFile;
 	return s_PerformIO(&op);
+}
+
+static NTSTATUS __stdcall s_IcCancelIoFile(HANDLE hFile, PIO_STATUS_BLOCK piosbCancellation) {
+	NTSTATUS status;
+
+	status = MwCancelHandleIO(hFile, CB_CURRENT_THREAD);
+
+	piosbCancellation->Information = 0;
+	piosbCancellation->Pointer = NULL;
+	piosbCancellation->Status = status;
+	return status;
+}
+
+static NTSTATUS __stdcall s_IcCancelIoFileEx(HANDLE hFile, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation) {
+	NTSTATUS status;
+
+	if (piosbToCancel)
+		status = MwCancelIORequest(piosbToCancel);
+	else
+		status = MwCancelHandleIO(hFile, NULL);
+
+	piosbCancellation->Information = 0;
+	piosbCancellation->Pointer = NULL;
+	piosbCancellation->Status = status;
+	return status;
+
+}
+
+static NTSTATUS __stdcall s_IcCancelSynchronousIoFile(HANDLE hThread, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation) {
+	NTSTATUS status;
+
+	// todo: check that piosbToCancel was issued by hThread / is synchronous?
+
+	if (piosbToCancel)
+		status = MwCancelIORequest(piosbToCancel);
+	else
+		status = MwCancelThreadIO(hThread, TRUE);
+
+	piosbCancellation->Information = 0;
+	piosbCancellation->Pointer = NULL;
+	piosbCancellation->Status = status;
+	return status;
 }
 
 static NTSTATUS s_CheckMode(HANDLE hFile, OUT PMW_WAITS_FILE_MODE pnMode) {
@@ -1091,4 +1158,123 @@ static void s_SetTreeRemove(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, v
 		if (CB_NT_FAILED(status))
 			DbgPrint("[InterceptIO:s_SetTreeRemove] RtlLeaveCriticalSection returned status 0x%08X\r\n", status);
 	}
+}
+
+static NTSTATUS s_TreeIterate(avl_tree_t* ptreeSet, TreeIterCallback_t procCallback, LPVOID pUserData) {
+	return s_TreeIterateImpl(ptreeSet->root, procCallback, pUserData);
+}
+
+static NTSTATUS s_TreeIterateImpl(avl_tree_node_t* pnodeCur, TreeIterCallback_t procCallback, LPVOID pUserData) {
+	NTSTATUS status;
+
+	if (pnodeCur == NULL)
+		return 0;
+
+	status = s_TreeIterateImpl(pnodeCur->left, procCallback, pUserData);
+	if (CB_NT_FAILED(status)) return status;
+
+	status = procCallback(pUserData, pnodeCur->key, pnodeCur->data);
+	if (CB_NT_FAILED(status)) return status;
+
+	status = s_TreeIterateImpl(pnodeCur->right, procCallback, pUserData);
+	if (CB_NT_FAILED(status)) return status;
+
+	return 0;
+}
+
+DWORD MAGICWAYS_EXPORTED MwCancelHandleIO(HANDLE hObject, OPTIONAL HANDLE hOnlyCertainThread) {
+	PVOID pResumeData;
+	NTSTATUS status = 0, status2 = 0;
+	avl_tree_t* ptreeOps;
+	THREAD_BASIC_INFORMATION infThread;
+	ULONG nInfoSize;
+
+	if (hOnlyCertainThread) {
+		status = NtQueryInformationThread(hOnlyCertainThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nInfoSize);
+		if (CB_NT_FAILED(status)) return status;
+	}
+
+	status = RtlEnterCriticalSection(&s_csObjectOpsTree);
+	if (CB_NT_FAILED(status)) return status;
+
+	__try {
+		ptreeOps = avl_search(&s_treeObjectOps, hObject);
+		if (ptreeOps == NULL)
+			__leave; // nothing to cancel
+
+		status = s_TreeIterate(ptreeOps, s_CancelIOCallback, (LPVOID)(hOnlyCertainThread ? infThread.ClientID.UniqueThread : 0));
+	} __finally {
+		status2 = RtlLeaveCriticalSection(&s_csObjectOpsTree);
+		if (CB_NT_FAILED(status2))
+			DbgPrint("[InterceptIO:MwCancelHandleIO] RtlLeaveCriticalSection returned status 0x%08X!\r\n", status2);
+	}
+
+	return CB_NT_FAILED(status2) ? status2 : status;
+}
+
+DWORD MAGICWAYS_EXPORTED MwCancelIORequest(PVOID pIOStatusBlock) {
+	PVOID pResumeData;
+	NTSTATUS status = 0, status2 = 0;
+	PMW_WAITS_IO_OP pop;
+
+	status = RtlEnterCriticalSection(&s_csStatusBlocksTree);
+	if (CB_NT_FAILED(status)) return status;
+
+	__try {
+		pop = avl_search(&s_treeStatusBlocks, pIOStatusBlock);
+		if (pop == NULL) {
+			status = STATUS_NOT_FOUND;
+			__leave;
+		}
+
+		status = NtSetEvent(pop->meta.hTaskCancelledEvent, NULL);
+	} __finally {
+		status2 = RtlLeaveCriticalSection(&s_csStatusBlocksTree);
+		if (CB_NT_FAILED(status2))
+			DbgPrint("[InterceptIO:MwCancelIORequest] RtlLeaveCriticalSection returned status 0x%08X!\r\n", status2);
+	}
+
+	return CB_NT_FAILED(status2) ? status2 : status;
+}
+
+DWORD MAGICWAYS_EXPORTED MwCancelThreadIO(HANDLE hThread, BOOL bSyncOnly) {
+	PVOID pResumeData;
+	NTSTATUS status = 0, status2 = 0;
+	avl_tree_t* ptreeOps;
+	THREAD_BASIC_INFORMATION infThread;
+	ULONG nInfoSize;
+
+	status = NtQueryInformationThread(hThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nInfoSize);
+	if (CB_NT_FAILED(status)) return status;
+
+	status = RtlEnterCriticalSection(&s_csThreadOpsTree);
+	if (CB_NT_FAILED(status)) return status;
+
+	__try {
+		ptreeOps = avl_search(&s_treeThreadOps, (void*)infThread.ClientID.UniqueThread);
+		if (ptreeOps == NULL)
+			__leave; // nothing to cancel
+
+		status = s_TreeIterate(ptreeOps, s_CancelIOCallback, NULL);
+	} __finally {
+		status2 = RtlLeaveCriticalSection(&s_csThreadOpsTree);
+		if (CB_NT_FAILED(status2))
+			DbgPrint("[InterceptIO:MwCancelThreadIO] RtlLeaveCriticalSection returned status 0x%08X!\r\n", status2);
+	}
+
+	return CB_NT_FAILED(status2) ? status2 : status;
+}
+
+static NTSTATUS s_CancelIOCallback(LPVOID pIgnored1, PMW_WAITS_IO_OP pop, OPTIONAL UINT_PTR nRequiredThreadID) {
+	THREAD_BASIC_INFORMATION infThread;
+	ULONG nInfoSize;
+	NTSTATUS status;
+
+	if (nRequiredThreadID != 0) {
+		status = NtQueryInformationThread(pop->meta.hOriginalThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nInfoSize);
+		if (CB_NT_FAILED(status) || (infThread.ClientID.UniqueThread != nRequiredThreadID)) 
+			return 0; // skip
+	}
+
+	return NtSetEvent(pop->meta.hTaskCancelledEvent, NULL);
 }

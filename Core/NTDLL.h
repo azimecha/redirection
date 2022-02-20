@@ -123,6 +123,16 @@
 #define WAIT_FAILED (DWORD)0xFFFFFFFF
 #endif
 
+#ifndef STATUS_ALREADY_COMMITTED
+#define STATUS_ALREADY_COMMITTED 0xC0000021
+#endif
+
+#ifndef STATUS_NOT_COMMITTED
+#define STATUS_NOT_COMMITTED 0xC000002D
+#endif
+
+#define CB_CURRENT_THREAD ((HANDLE)-2)
+
 typedef DWORD NTSTATUS;
 typedef ULONG ACCESS_MASK;
 
@@ -699,6 +709,10 @@ typedef NTSTATUS(__stdcall* NtFsControlFile_t)(HANDLE hFile, OPTIONAL HANDLE hEv
 	PIO_STATUS_BLOCK piosb, ULONG nFSCTL, OPTIONAL PVOID pInBuf, ULONG nInBufLen, OPTIONAL PVOID pOutBuf, ULONG nOutBufLen);
 
 typedef NTSTATUS(__stdcall* CbNtThreadProc_t)(PVOID pParam);
+
+typedef NTSTATUS(__stdcall* NtCancelIoFile_t)(HANDLE hFile, PIO_STATUS_BLOCK piosbCancellation);
+typedef NTSTATUS(__stdcall* NtCancelIoFileEx_t)(HANDLE hFile, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation);
+typedef NTSTATUS(__stdcall* NtCancelSynchronousIoFile_t)(HANDLE hThread, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation);
 
 #endif // CB_NTDLL_NO_TYPES
 
