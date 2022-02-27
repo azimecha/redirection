@@ -61,6 +61,8 @@ CommandLineToArgvW(
 
     argv = (PWCHAR*)GlobalAlloc(GMEM_FIXED,
         i + (len + 2) * sizeof(WCHAR));
+    if (argv == NULL)
+        return NULL;
 
     _argv = (PWCHAR)(((PUCHAR)argv) + i);
 

@@ -161,6 +161,7 @@ static BOOL s_ReplaceDLLNames(PIMAGE_IMPORT_DESCRIPTOR pdescImports, DWORD nDirS
 		pfuncs->procDisplayInfo(pfuncs->pUserData, "Import: name at 0x%08X -> ", (uintptr_t)xpImportDLLName);
 
 		// read and normalize the import dll name
+		memset(szImportDLLName, 0, sizeof(szImportDLLName));
 		if (!pfuncs->procReadMemory(xpImportDLLName, sizeof(szImportDLLName) - 1, szImportDLLName, pfuncs->pUserData)) {
 			pfuncs->procDisplayError(pfuncs->pUserData, "Error 0x%08X reading imported DLL name\r\n", GetLastError());
 			return FALSE;

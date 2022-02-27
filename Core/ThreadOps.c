@@ -201,3 +201,59 @@ DWORD CbOpenCurrentThread(OUT PHANDLE phCurThread) {
 
 	return NtOpenThread(phCurThread, THREAD_ALL_ACCESS, &attrib, &CbGetTEB()->ClientId);
 }
+
+#if 0
+DWORD CbCreateThreadDirect(OUT PHANDLE phThread, OPTIONAL OUT PDWORD pnThreadID, SIZE_T nStackSize, CbDirectCreatedThreadProc_t procStart,
+	OPTIONAL ULONG_PTR param, BOOLEAN bSus) 
+{
+	CONTEXT ctxNewThread;
+	CLIENT_ID cidNewThread;
+	INITIAL_TEB itebNewThread;
+	PVOID pStack = 0, pStackTop;
+	NTSTATUS status = 0;
+	ULONG nStackSizeUlong;
+	OBJECT_ATTRIBUTES oa;
+
+	memset(&ctxNewThread, 0, sizeof(ctxNewThread));
+	memset(&cidNewThread, 0, sizeof(cidNewThread));
+	memset(&itebNewThread, 0, sizeof(itebNewThread));
+	memset(&oa, 0, sizeof(oa));
+
+	nStackSizeUlong = (ULONG)nStackSize;
+	status = NtAllocateVirtualMemory(CB_CURRENT_PROCESS, &pStack, 4, &nStackSizeUlong, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (CB_NT_FAILED(status))
+		return status;
+
+	pStackTop = (PBYTE)pStack + nStackSize;
+	__try {
+		RtlInitializeContext(CB_CURRENT_PROCESS, &ctxNewThread, (PVOID)param, procStart, pStackTop);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		status = GetExceptionCode();
+		goto L_error_freestk;
+	}
+
+	itebNewThread.pNewStackBase = pStackTop;
+	itebNewThread.pNewStackLimit = pStack;
+
+	oa.Length = sizeof(oa);
+
+	status = NtCreateThread(phThread, THREAD_ALL_ACCESS, &oa, CB_CURRENT_PROCESS, &cidNewThread, &ctxNewThread, &itebNewThread, bSus);
+	if (CB_NT_FAILED(status))
+		goto L_error_freestk;
+
+	if (pnThreadID)
+		*pnThreadID = (DWORD)cidNewThread.UniqueThread;
+
+	return status;
+
+L_error_freestk:
+	NtFreeVirtualMemory(CB_CURRENT_PROCESS, &pStack, 0, MEM_DECOMMIT | MEM_RELEASE);
+	return status;
+}
+#endif
+
+BOOLEAN CbIsThreadInLoaderLock(DWORD nThreadID) {
+	PPEB_FULL pFullPEB;
+	pFullPEB = (PPEB_FULL)CbGetPEB();
+	return pFullPEB && pFullPEB->LoaderLock && ((DWORD)pFullPEB->LoaderLock->OwningThread == nThreadID);
+}

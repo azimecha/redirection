@@ -12,6 +12,8 @@ typedef struct _MW_THREADPOOL_ITEM {
 	HANDLE hThread;
 } MW_THREADPOOL_ITEM, *PMW_THREADPOOL_ITEM;
 
+static void __stdcall s_APCProcessingThreadInitialAPC(PVOID pParam, PIO_STATUS_BLOCK piosbIgnored, ULONG nReservedIgnored);
+
 static PMW_THREADPOOL_ITEM s_pItemZero = NULL;
 static CbSpinLock_t s_lock = CB_SPINLOCK_INITIAL;
 
@@ -20,6 +22,7 @@ HANDLE MAGICWAYS_EXPORTED MwGetPoolThread(void) {
 	HANDLE hThread = NULL;
 	NTSTATUS status;
 	CLIENT_ID client;
+	DWORD nThreadID;
 
 	// try to get a thread out
 	CbAcquireSpinLockYielding(&s_lock);
@@ -35,6 +38,7 @@ HANDLE MAGICWAYS_EXPORTED MwGetPoolThread(void) {
 	}
 
 	// else, create a new thread
+#if 1
 	status = RtlCreateUserThread(CB_CURRENT_PROCESS, NULL, TRUE, 0, NULL, NULL, MwAPCProcessingThreadProc, NULL, &hThread, &client);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[ThreadPool:MwGetPoolThread] RtlCreateUserThread returned status 0x%08X\r\n", status);
@@ -42,7 +46,24 @@ HANDLE MAGICWAYS_EXPORTED MwGetPoolThread(void) {
 		return NULL;
 	}
 
-	status = DisableIOInterception(client.UniqueThread);
+	nThreadID = (DWORD)client.UniqueThread;
+
+	status = NtQueueApcThread(hThread, s_APCProcessingThreadInitialAPC, NULL, NULL, 0);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ThreadPool:MwGetPoolThread] NtQueueApcThread returned status 0x%08X\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return NULL;
+	}
+#else
+	status = CbCreateThreadDirect(&hThread, &nThreadID, 64 * 1024, MwAPCProcessingThreadProc, 0, TRUE);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[ThreadPool:MwGetPoolThread] CbCreateThreadDirect returned status 0x%08X\r\n", status);
+		CbLastWinAPIError = RtlNtStatusToDosError(status);
+		return NULL;
+	}
+#endif
+
+	status = DisableIOInterception(nThreadID);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[ThreadPool:MwGetPoolThread] DisableIOInterception returned status 0x%08X\r\n", status);
 		CbLastWinAPIError = RtlNtStatusToDosError(status);
@@ -102,4 +123,17 @@ DWORD MAGICWAYS_EXPORTED MwAPCProcessingThreadProc(PVOID pParams) {
 		if (CB_NT_FAILED(status))
 			DbgPrint("[ThreadPool:MwAPCProcessingThreadProc] NtDelayExecution returned 0x%08X\r\n", status);
 	}
+}
+
+static void __stdcall s_APCProcessingThreadInitialAPC(PVOID pParam, PIO_STATUS_BLOCK piosbIgnored, ULONG nReservedIgnored) {
+	NTSTATUS status;
+
+	__try {
+		status = MwAPCProcessingThreadProc(pParam);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		status = GetExceptionCode();
+		DbgPrint("[ThreadPool:s_APCProcessingThreadInitialAPC] Exception 0x%08X in APC processing thread\r\n", status);
+	}
+
+	NtTerminateThread(CB_CURRENT_THREAD, status);
 }

@@ -28,9 +28,10 @@ struct _MW_WAITS_IO_OP;
 typedef NTSTATUS(* MW_WAITS_IO_PROC)(struct _MW_WAITS_IO_OP* pop);
 
 typedef struct _MW_WAITS_IO_METADATA {
-	HANDLE hTaskCompleteEvent, hTaskCancelledEvent, hOriginalThread, hNewThread;
+	HANDLE hTaskCompleteEvent, hTaskCancelledEvent, hOriginalThread, hNewThread, hWorkerFinishedEvent;
 	NTSTATUS statusTaskResult;
 	MW_WAITS_FILE_MODE mode;
+	DWORD nOriginalThreadID;
 } MW_WAITS_IO_METADATA, *PMW_WAITS_IO_METADATA;
 
 typedef struct _MW_WAITS_IO_OP {
@@ -62,6 +63,11 @@ typedef struct _MW_WAITS_IO_OP {
 } MW_WAITS_IO_OP, *PMW_WAITS_IO_OP;
 
 typedef NTSTATUS(* TreeIterCallback_t)(LPVOID pUserData, void* pKey, void* pValue);
+
+typedef struct _MW_WAITS_IO_CANCEL_INFO {
+	DWORD nRequiredThreadID;
+	BOOLEAN bSynchronousOnly;
+} MW_WAITS_IO_CANCEL_INFO, * PMW_WAITS_IO_CANCEL_INFO;
 
 #define MW_WAITS_TARGET_NAMED(n) { "Nt" #n, &s_procNt ##n, s_Ic ##n }
 #define MW_WAITS_OPTIONAL_TARGET_NAMED(n) { "Nt" #n, &s_procNt ##n, s_Ic ##n, TRUE }
@@ -139,7 +145,10 @@ static void s_SetTreeRemove(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, v
 static NTSTATUS s_TreeIterate(avl_tree_t* ptreeSet, TreeIterCallback_t procCallback, LPVOID pUserData);
 static NTSTATUS s_TreeIterateImpl(avl_tree_node_t* pnodeCur, TreeIterCallback_t procCallback, LPVOID pUserData);
 
-static NTSTATUS s_CancelIOCallback(LPVOID pIgnored1, PMW_WAITS_IO_OP pop, OPTIONAL UINT_PTR nRequiredThreadID);
+static NTSTATUS s_CancelSetIOCallback(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PVOID pIgnored, avl_tree_t* ptreeOpsSet);
+static NTSTATUS s_CancelIOKeysCallback(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PMW_WAITS_IO_OP pop, PVOID pIgnored);
+static NTSTATUS s_CancelIOValuesCallback(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PVOID pIgnored, PMW_WAITS_IO_OP pop);
+static NTSTATUS s_CancelOperation(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PMW_WAITS_IO_OP pop);
 
 static const GUID s_idSyncIOCompleteEvent = { 0x19345D63, 0x00ED, 0x40B5, {0x94, 0x52, 0x83, 0x25, 0x29, 0x00, 0x38, 0xDF} };
 static const GUID s_idSyncIOCancelledEvent = { 0xE81C2100, 0x22CA, 0x45FE, {0x89, 0xC8, 0x84, 0xE4, 0x2E, 0xDA, 0xC6, 0xAF} };
@@ -325,6 +334,19 @@ static NTSTATUS __stdcall s_IcCancelIoFileEx(HANDLE hFile, OPTIONAL PIO_STATUS_B
 
 static NTSTATUS __stdcall s_IcCancelSynchronousIoFile(HANDLE hThread, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation) {
 	NTSTATUS status;
+	BOOLEAN bCloseThreadHandle = FALSE;
+
+	// documentation for CancelSynchronousIo says it requires THREAD_TERMINATE, but not THREAD_QUERY_INFORMATION which we need
+
+	if (!CbAccessCheck(hThread, THREAD_TERMINATE))
+		return STATUS_ACCESS_DENIED;
+	
+	if (!CbAccessCheck(hThread, THREAD_QUERY_INFORMATION)) {
+		status = NtDuplicateObject(CB_CURRENT_PROCESS, hThread, CB_CURRENT_PROCESS, &hThread, THREAD_QUERY_INFORMATION, FALSE, 0);
+		if (CB_NT_FAILED(status))
+			return status;
+		bCloseThreadHandle = TRUE;
+	}
 
 	// todo: check that piosbToCancel was issued by hThread / is synchronous?
 
@@ -336,6 +358,10 @@ static NTSTATUS __stdcall s_IcCancelSynchronousIoFile(HANDLE hThread, OPTIONAL P
 	piosbCancellation->Information = 0;
 	piosbCancellation->Pointer = NULL;
 	piosbCancellation->Status = status;
+
+	if (bCloseThreadHandle)
+		NtClose(hThread);
+
 	return status;
 }
 
@@ -442,7 +468,7 @@ static void __stdcall s_OverlappedIOObserverProc(PMW_WAITS_IO_OP pop, PIO_STATUS
 	PVOID pAPCRoutine, pAPCParam;
 	HANDLE hUserCompleteEvent;
 	LARGE_INTEGER liTimeout;
-	BOOL bCancelled = FALSE;
+	BOOL bCancelled = FALSE, bQueuedAPC = FALSE;
 	HANDLE hWorkerThread = NULL;
 
 	// runs on a pool thread
@@ -472,8 +498,10 @@ static void __stdcall s_OverlappedIOObserverProc(PMW_WAITS_IO_OP pop, PIO_STATUS
 		goto L_complete;
 	}
 
+	bQueuedAPC = TRUE;
+
 	// wait for completion
-	arrObjects[0] = pop->meta.hTaskCompleteEvent;
+	arrObjects[0] = pop->meta.hWorkerFinishedEvent;
 	arrObjects[1] = pop->meta.hTaskCancelledEvent;
 	liTimeout.QuadPart = INT64_MAX;
 
@@ -482,21 +510,24 @@ static void __stdcall s_OverlappedIOObserverProc(PMW_WAITS_IO_OP pop, PIO_STATUS
 	case WAIT_OBJECT_0 + 0: // complete
 		if ((pop->meta.statusTaskResult == STATUS_PENDING) && pop->piosb)
 			pop->meta.statusTaskResult = pop->piosb->Status;
-		goto L_complete;
+		break;
 
 	default: // failed
 		DbgPrint("[InterceptWaits:s_OverlappedIOObserverProc] NtWaitForMultipleObjects returned status 0x%08X! Unable to wait for completion!\r\n",
 			status);
+		CbDisplayStatus(status, TRUE, "waiting for I/O operation 0x%08X (IOSB 0x%08X) to complete", hWorkerThread, pop, pop->piosb);
 		// fall through - try to cancel
 
 	case WAIT_OBJECT_0 + 1: // cancelled
 		status = NtTerminateThread(hWorkerThread, STATUS_CANCELLED);
-		if (CB_NT_FAILED(status))
+		if (CB_NT_FAILED(status)) {
 			DbgPrint("[InterceptWaits:s_OverlappedIOObserverProc] NtTerminateThread returned status 0x%08X! I/O not cancelled!\r\n", status);
+			CbDisplayStatus(status, TRUE, "terminating thread 0x%08X to cancel I/O operation 0x%08X (IOSB 0x%08X)", hWorkerThread, pop, pop->piosb);
+		}
 		NtClose(hWorkerThread);
 		hWorkerThread = NULL; // doesn't get returned to the pool
 		pop->meta.statusTaskResult = STATUS_CANCELLED;
-		goto L_complete;
+		break;
 	}
 
 L_complete:
@@ -508,14 +539,20 @@ L_complete:
 
 	if (pAPCRoutine) {
 		status = NtQueueApcThread(pop->meta.hOriginalThread, pAPCRoutine, pAPCParam, pop->piosb, 0);
-		if (CB_NT_FAILED(status))
+		if (CB_NT_FAILED(status)) {
 			DbgPrint("[InterceptWaits:s_OverlappedIOObserverProc] NtQueueApcThread returned status 0x%08X! User APC will not run!\r\n", status);
+			CbDisplayStatus(status, TRUE, "queuing user APC 0x%08X with parameter 0x%08X to thread 0x%08X to signal completion of "
+				"I/O operation 0x%08X (IOSB 0x%08X)", pAPCRoutine, pAPCParam, pop, pop->piosb);
+		}
 	}
 
 	if (hUserCompleteEvent) {
 		status = NtSetEvent(hUserCompleteEvent, NULL);
-		if (CB_NT_FAILED(status))
+		if (CB_NT_FAILED(status)) {
 			DbgPrint("[InterceptWaits:s_OverlappedIOObserverProc] NtSetEvent returned status 0x%08X! User event not signaled!\r\n", status);
+			CbDisplayStatus(status, TRUE, "setting user event 0x%08X to signal completion of I/O operation 0x%08X (IOSB 0x%08X)", pAPCRoutine,
+				pAPCParam, pop, pop->piosb);
+		}
 	}
 
 	s_UnregisterIO(pop);
@@ -532,30 +569,33 @@ static void __stdcall s_OverlappedIOWorkerProc(PMW_WAITS_IO_OP pop, PIO_STATUS_B
 	// will be terminated by observer on cancellation
 
 	__try {
-		status = pop->procDoActualIO(pop);
-	} __except (EXCEPTION_EXECUTE_HANDLER) {
-		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Exception 0x%08X in overlapped I/O request\r\n", GetExceptionCode());
-		pop->meta.statusTaskResult = GetExceptionCode();
-		goto L_setevent;
+		__try {
+			status = pop->procDoActualIO(pop);
+
+			pop->meta.statusTaskResult = status;
+			if (status != STATUS_PENDING)
+				__leave;
+
+			status = NtWaitForSingleObject(pop->meta.hTaskCompleteEvent, FALSE, NULL);
+			if (status != WAIT_OBJECT_0) {
+				DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X waiting for I/O completion event! I/O not completed!\r\n", status);
+				CbDisplayStatus(status, TRUE, "waiting for completion event 0x%08X, which should be signaled as part of I/O operation 0x%08X "
+					"(IOSB 0x%08X)", pop->meta.hTaskCompleteEvent, pop, pop->piosb);
+				pop->meta.statusTaskResult = status;
+				__leave;
+			}
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Exception 0x%08X in overlapped I/O request\r\n", GetExceptionCode());
+			pop->meta.statusTaskResult = GetExceptionCode();
+		}
+	} __finally {
+		status = NtSetEvent(pop->meta.hWorkerFinishedEvent, NULL);
+		if (CB_NT_FAILED(status)) {
+			DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X setting worker completion event! I/O will never complete!\r\n", status);
+			CbDisplayStatus(status, TRUE, "setting event 0x%08X to complete I/O operation 0x%08X (IOSB 0x%08X)", pop->meta.hWorkerFinishedEvent,
+				pop, pop->piosb);
+		}
 	}
-
-	pop->meta.statusTaskResult = status;
-	if (status != STATUS_PENDING)
-		goto L_setevent;
-
-	status = NtWaitForSingleObject(pop->meta.hTaskCompleteEvent, FALSE, NULL);
-	if (status != WAIT_OBJECT_0) {
-		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X waiting for completion event! I/O not completed!\r\n", status);
-		pop->meta.statusTaskResult = status;
-		goto L_setevent;
-	}
-
-	return;
-
-L_setevent:
-	status = NtSetEvent(pop->meta.hTaskCompleteEvent, NULL);
-	if (CB_NT_FAILED(status))
-		DbgPrint("[InterceptWaits:s_OverlappedIOWorkerProc] Error 0x%08X setting completion event! I/O will never complete!\r\n", status);
 }
 
 static void __stdcall s_AlertableIOCancelProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BLOCK piosbIgnored, ULONG nReserved) {
@@ -566,7 +606,7 @@ static void __stdcall s_AlertableIOCancelProc(PMW_WAITS_IO_OP pop, PIO_STATUS_BL
 	// used to cancel alertable synchronous I/O, i.e. not overlapped but APCs allowed
 
 	RtlSecureZeroMemory(&iosb, sizeof(iosb));
-	status = NtCancelIoFile(pop->hFile, &iosb);
+	status = NtCancelIoFile(pop->hFile, &iosb); // TODO: this cancels all I/O on the handle
 	if (CB_NT_FAILED(status))
 		DbgPrint("[InterceptWaits:s_AlertableIOCancelProc] NtCancelIoFile returned 0x%08X\r\n", status);
 }
@@ -577,6 +617,7 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 	PIO_APC_ROUTINE procAPC;
 	PMW_WAITS_IO_OP popOriginal = NULL;
 	BOOL bSucc = FALSE, bNoIntercept;
+	HANDLE arrWaitFor[2];
 
 	// runs on main thread
 
@@ -586,7 +627,7 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 		goto L_exit;
 	}
 
-	if (bNoIntercept) {
+	if (bNoIntercept || CbIsThreadInLoaderLock((DWORD)CbGetTEB()->ClientId.UniqueThread)) {
 		__try {
 			status = pop->procDoActualIO(pop);
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -678,13 +719,31 @@ static NTSTATUS s_PerformIO(PMW_WAITS_IO_OP pop) {
 		break;
 
 	case MwWaitsFileMode_Synchronous:
-		status = NtWaitForSingleObject(pop->meta.hTaskCompleteEvent, FALSE, NULL);
-		if (CB_NT_FAILED(status)) {
+		arrWaitFor[0] = pop->meta.hTaskCompleteEvent;
+		arrWaitFor[1] = pop->meta.hTaskCancelledEvent;
+
+		status = NtWaitForMultipleObjects(ARRAYSIZE(arrWaitFor), arrWaitFor, WaitAnyObject, FALSE, NULL);
+		switch (status) {
+		case STATUS_WAIT_0 + 0: // complete
+			status = pop->meta.statusTaskResult;
+			break;
+
+		case STATUS_WAIT_0 + 1: // cancelled
+			status = NtTerminateThread(pop->meta.hNewThread, STATUS_CANCELLED);
+			if (CB_NT_FAILED(status)) {
+				CbDisplayStatus(status, TRUE, "terminating thread 0x%08X to cancel I/O operation 0x%08X (IOSB 0x%08X)", pop->meta.hNewThread,
+					pop, pop->piosb);
+			}
+			MwDiscardTLS(&s_idSyncIOThreadHandle);
+			pop->meta.hNewThread = NULL;
+			status = STATUS_CANCELLED;
+			break;
+
+		default: // error
 			DbgPrint("[InterceptWaits:s_PerformIO] NtWaitForSingleObject returned status 0x%08X\r\n", status);
 			MwDiscardTLS(&s_idSyncIOThreadHandle);
 			pop->meta.hNewThread = NULL;
 		}
-		status = pop->meta.statusTaskResult;
 		break;
 	}
 
@@ -718,6 +777,7 @@ static NTSTATUS s_InitSyncIOMetadata(PMW_WAITS_IO_METADATA pmeta, MW_WAITS_FILE_
 		return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 	}
 	pmeta->hOriginalThread = *phObject;
+	pmeta->nOriginalThreadID = (DWORD)CbGetTEB()->ClientId.UniqueThread;
 
 	phObject = MwGetTLS(&s_idSyncIOCancelledEvent, sizeof(HANDLE), s_LocalEventCtor, s_LocalHandleDtor, "InterceptWaits cancel evt");
 	if (phObject == NULL) {
@@ -832,6 +892,8 @@ static NTSTATUS s_InitAsyncIOMetadata(PMW_WAITS_IO_METADATA pmeta) {
 		goto L_errorexit;
 	}
 
+	pmeta->nOriginalThreadID = (DWORD)CbGetTEB()->ClientId.UniqueThread;
+
 	status = NtCreateEvent(&pmeta->hTaskCompleteEvent, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_InitAsyncIOMetadata] NtCreateEvent for hTaskCompleteEvent returned 0x%08X\r\n", status);
@@ -841,6 +903,12 @@ static NTSTATUS s_InitAsyncIOMetadata(PMW_WAITS_IO_METADATA pmeta) {
 	status = NtCreateEvent(&pmeta->hTaskCancelledEvent, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
 	if (CB_NT_FAILED(status)) {
 		DbgPrint("[InterceptWaits:s_InitAsyncIOMetadata] NtCreateEvent for hTaskCancelledEvent returned 0x%08X\r\n", status);
+		goto L_errorexit;
+	}
+
+	status = NtCreateEvent(&pmeta->hWorkerFinishedEvent, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
+	if (CB_NT_FAILED(status)) {
+		DbgPrint("[InterceptWaits:s_InitAsyncIOMetadata] NtCreateEvent for hWorkerFinishedEvent returned 0x%08X\r\n", status);
 		goto L_errorexit;
 	}
 
@@ -867,6 +935,9 @@ static void s_UninitAsyncIOMetadata(PMW_WAITS_IO_METADATA pmeta) {
 
 	if (pmeta->hTaskCancelledEvent)
 		NtClose(pmeta->hTaskCancelledEvent);
+
+	if (pmeta->hWorkerFinishedEvent)
+		NtClose(pmeta->hWorkerFinishedEvent);
 
 	if (pmeta->hNewThread)
 		MwReturnPoolThread(pmeta->hNewThread);
@@ -1059,7 +1130,7 @@ static void s_UnregisterIO(PMW_WAITS_IO_OP pop) {
 	}
 
 	__try {
-		s_SetTreeRemove(&s_csThreadOpsTree, &s_treeThreadOps, pop->meta.hOriginalThread, pop);
+		s_SetTreeRemove(&s_csThreadOpsTree, &s_treeThreadOps, pop->meta.nOriginalThreadID, pop);
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		DbgPrint("[InterceptIO:s_RegisterIO] Exception 0x%08X removing operation from thread ops tree\r\n", GetExceptionCode());
 	}
@@ -1145,10 +1216,17 @@ static void s_SetTreeRemove(RTL_CRITICAL_SECTION* pcs, avl_tree_t* ptreeOuter, v
 
 	__try {
 		ptreeInner = avl_search(ptreeOuter, key);
-		if (ptreeInner == NULL)
+		if (ptreeInner == NULL) {
+			DbgPrint("[InterceptIO:s_SetTreeRemove] Could not remove K=0x%08X V=0x%08X from set tree 0x%08X: key not found\r\n", 
+				key, value, ptreeOuter);
 			__leave;
+		}
 
-		avl_remove(ptreeInner, value);
+		if (avl_remove(ptreeInner, value) == NULL) {
+			DbgPrint("[InterceptIO:s_SetTreeRemove] Could not remove K=0x%08X V=0x%08X from set tree 0x%08X: value not found\r\n", 
+				key, value, ptreeOuter);
+		}
+
 		if (ptreeInner->root == NULL) {
 			avl_remove(ptreeOuter, key);
 			CbHeapFree(ptreeInner);
@@ -1188,10 +1266,12 @@ DWORD MAGICWAYS_EXPORTED MwCancelHandleIO(HANDLE hObject, OPTIONAL HANDLE hOnlyC
 	avl_tree_t* ptreeOps;
 	THREAD_BASIC_INFORMATION infThread;
 	ULONG nInfoSize;
+	MW_WAITS_IO_CANCEL_INFO infCancel = { 0 };
 
 	if (hOnlyCertainThread) {
 		status = NtQueryInformationThread(hOnlyCertainThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nInfoSize);
 		if (CB_NT_FAILED(status)) return status;
+		infCancel.nRequiredThreadID = (DWORD)infThread.ClientID.UniqueThread;
 	}
 
 	status = RtlEnterCriticalSection(&s_csObjectOpsTree);
@@ -1202,7 +1282,7 @@ DWORD MAGICWAYS_EXPORTED MwCancelHandleIO(HANDLE hObject, OPTIONAL HANDLE hOnlyC
 		if (ptreeOps == NULL)
 			__leave; // nothing to cancel
 
-		status = s_TreeIterate(ptreeOps, s_CancelIOCallback, (LPVOID)(hOnlyCertainThread ? infThread.ClientID.UniqueThread : 0));
+		status = s_TreeIterate(ptreeOps, s_CancelIOKeysCallback, &infCancel);
 	} __finally {
 		status2 = RtlLeaveCriticalSection(&s_csObjectOpsTree);
 		if (CB_NT_FAILED(status2))
@@ -1243,9 +1323,13 @@ DWORD MAGICWAYS_EXPORTED MwCancelThreadIO(HANDLE hThread, BOOL bSyncOnly) {
 	avl_tree_t* ptreeOps;
 	THREAD_BASIC_INFORMATION infThread;
 	ULONG nInfoSize;
+	MW_WAITS_IO_CANCEL_INFO infCancel;
 
 	status = NtQueryInformationThread(hThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nInfoSize);
 	if (CB_NT_FAILED(status)) return status;
+
+	infCancel.bSynchronousOnly = (BOOLEAN)bSyncOnly;
+	infCancel.nRequiredThreadID = (DWORD)infThread.ClientID.UniqueThread;
 
 	status = RtlEnterCriticalSection(&s_csThreadOpsTree);
 	if (CB_NT_FAILED(status)) return status;
@@ -1255,7 +1339,7 @@ DWORD MAGICWAYS_EXPORTED MwCancelThreadIO(HANDLE hThread, BOOL bSyncOnly) {
 		if (ptreeOps == NULL)
 			__leave; // nothing to cancel
 
-		status = s_TreeIterate(ptreeOps, s_CancelIOCallback, NULL);
+		status = s_TreeIterate(ptreeOps, s_CancelIOKeysCallback, &infCancel);
 	} __finally {
 		status2 = RtlLeaveCriticalSection(&s_csThreadOpsTree);
 		if (CB_NT_FAILED(status2))
@@ -1265,16 +1349,32 @@ DWORD MAGICWAYS_EXPORTED MwCancelThreadIO(HANDLE hThread, BOOL bSyncOnly) {
 	return CB_NT_FAILED(status2) ? status2 : status;
 }
 
-static NTSTATUS s_CancelIOCallback(LPVOID pIgnored1, PMW_WAITS_IO_OP pop, OPTIONAL UINT_PTR nRequiredThreadID) {
+static NTSTATUS s_CancelSetIOCallback(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PVOID pIgnored, avl_tree_t* ptreeOpsSet) {
+	return s_TreeIterate(ptreeOpsSet, s_CancelIOKeysCallback, pinfCancel);
+}
+
+static NTSTATUS s_CancelIOKeysCallback(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PMW_WAITS_IO_OP pop, PVOID pIgnored) {
+	return s_CancelOperation(pinfCancel, pop);
+}
+
+static NTSTATUS s_CancelIOValuesCallback(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PVOID pIgnored, PMW_WAITS_IO_OP pop) {
+	return s_CancelOperation(pinfCancel, pop);
+}
+
+static NTSTATUS s_CancelOperation(PMW_WAITS_IO_CANCEL_INFO pinfCancel, PMW_WAITS_IO_OP pop) {
 	THREAD_BASIC_INFORMATION infThread;
 	ULONG nInfoSize;
 	NTSTATUS status;
 
-	if (nRequiredThreadID != 0) {
-		status = NtQueryInformationThread(pop->meta.hOriginalThread, ThreadBasicInformation, &infThread, sizeof(infThread), &nInfoSize);
-		if (CB_NT_FAILED(status) || (infThread.ClientID.UniqueThread != nRequiredThreadID)) 
-			return 0; // skip
-	}
+	if (pinfCancel->bSynchronousOnly && (pop->meta.mode != MwWaitsFileMode_Synchronous))
+		return 0; // skip
 
-	return NtSetEvent(pop->meta.hTaskCancelledEvent, NULL);
+	if ((pinfCancel->nRequiredThreadID != 0) && (pop->meta.nOriginalThreadID != pinfCancel->nRequiredThreadID))
+		return 0; // skip
+
+	status = NtSetEvent(pop->meta.hTaskCancelledEvent, NULL);
+	if (CB_NT_FAILED(status) && !(pop->meta.hTaskCancelledEvent == NULL))
+		return status;
+
+	return 0;
 }

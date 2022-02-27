@@ -82,6 +82,10 @@
 #define STATUS_CANCELLED 0xC0000120
 #endif
 
+#ifndef STATUS_ACCESS_DENIED
+#define STATUS_ACCESS_DENIED 0xC0000022
+#endif
+
 #ifndef STATUS_SEVERITY_SUCCESS
 #define STATUS_SEVERITY_SUCCESS 0
 #endif
@@ -414,7 +418,7 @@ typedef struct _PEB_FULL {
 	PVOID                   GdiSharedHandleTable;
 	PVOID                   ProcessStarterHelper;
 	PVOID                   GdiDCAttributeList;
-	PVOID                   LoaderLock;
+	PRTL_CRITICAL_SECTION   LoaderLock;
 	ULONG                   OSMajorVersion;
 	ULONG                   OSMinorVersion;
 	ULONG                   OSBuildNumber;
@@ -434,7 +438,7 @@ C_ASSERT(sizeof(PEB_FULL) == sizeof(PEB));
 typedef struct _CLIENT_ID {
 	HANDLE UniqueProcess;
 	HANDLE UniqueThread;
-} CLIENT_ID;
+} CLIENT_ID, *PCLIENT_ID;
 
 // Thread Environment Block
 // https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/pebteb/teb/index.htm
@@ -666,6 +670,88 @@ typedef enum _THREAD_INFORMATION_CLASS_FULL {
 	ThreadHideFromDebugger
 } THREAD_INFORMATION_CLASS_FULL, * PTHREAD_INFORMATION_CLASS_FULL;
 
+typedef struct _INITIAL_TEB {
+	PVOID pOldStackBase;
+	PVOID pOldStackLimit;
+	PVOID pNewStackBase;
+	PVOID pNewStackLimit;
+	PVOID pNewStackAllocBase;
+} INITIAL_TEB, *PINITIAL_TEB;
+
+typedef enum _OBJECT_INFORMATION_CLASS {
+	ObjectBasicInformation,
+	ObjectNameInformation,
+	ObjectTypeInformation,
+	ObjectAllInformation,
+	ObjectDataInformation
+} OBJECT_INFORMATION_CLASS, * POBJECT_INFORMATION_CLASS;
+
+typedef struct _OBJECT_BASIC_INFORMATION {
+	ULONG                   Attributes;
+	ACCESS_MASK             DesiredAccess;
+	ULONG                   HandleCount;
+	ULONG                   ReferenceCount;
+	ULONG                   PagedPoolUsage;
+	ULONG                   NonPagedPoolUsage;
+	ULONG                   Reserved[3];
+	ULONG                   NameInformationLength;
+	ULONG                   TypeInformationLength;
+	ULONG                   SecurityDescriptorLength;
+	LARGE_INTEGER           CreationTime;
+} OBJECT_BASIC_INFORMATION, * POBJECT_BASIC_INFORMATION;
+
+typedef struct _OBJECT_NAME_INFORMATION {
+	UNICODE_STRING          Name;
+	WCHAR                   NameBuffer[0];
+} OBJECT_NAME_INFORMATION, * POBJECT_NAME_INFORMATION;
+
+typedef enum _POOL_TYPE {
+	NonPagedPool = 0,
+	PagedPool = 1,
+	NonPagedPoolMustSucceed = 2,
+	DontUseThisType = 3,
+	NonPagedPoolCacheAligned = 4,
+	PagedPoolCacheAligned = 5,
+	NonPagedPoolCacheAlignedMustS = 6,
+	MaxPoolType = 7,
+	NonPagedPoolSession = 32,
+	PagedPoolSession = 33,
+	NonPagedPoolMustSucceedSession = 34,
+	DontUseThisTypeSession = 35,
+	NonPagedPoolCacheAlignedSession = 36,
+	PagedPoolCacheAlignedSession = 37,
+	NonPagedPoolCacheAlignedMustSSession = 38
+} POOL_TYPE;
+
+typedef struct _OBJECT_TYPE_INFORMATION {
+	UNICODE_STRING          TypeName;
+	ULONG                   TotalNumberOfHandles;
+	ULONG                   TotalNumberOfObjects;
+	WCHAR                   Unused1[8];
+	ULONG                   HighWaterNumberOfHandles;
+	ULONG                   HighWaterNumberOfObjects;
+	WCHAR                   Unused2[8];
+	ACCESS_MASK             InvalidAttributes;
+	GENERIC_MAPPING         GenericMapping;
+	ACCESS_MASK             ValidAttributes;
+	BOOLEAN                 SecurityRequired;
+	BOOLEAN                 MaintainHandleCount;
+	USHORT                  MaintainTypeList;
+	POOL_TYPE               PoolType;
+	ULONG                   DefaultPagedPoolCharge;
+	ULONG                   DefaultNonPagedPoolCharge;
+} OBJECT_TYPE_INFORMATION, * POBJECT_TYPE_INFORMATION;
+
+typedef struct _OBJECT_ALL_INFORMATION {
+	ULONG                   NumberOfObjectsTypes;
+	OBJECT_TYPE_INFORMATION ObjectTypeInformation[1];
+} OBJECT_ALL_INFORMATION, * POBJECT_ALL_INFORMATION;
+
+typedef struct _OBJECT_DATA_INFORMATION {
+	BOOLEAN                 InheritHandle;
+	BOOLEAN                 ProtectFromClose;
+} OBJECT_DATA_INFORMATION, * POBJECT_DATA_INFORMATION;
+
 typedef void(__stdcall* PIO_APC_ROUTINE)(PVOID pAPCContext, PIO_STATUS_BLOCK piosb, ULONG nReserved);
 
 typedef NTSTATUS(__stdcall* NtQuerySection_t)(HANDLE hSection, SECTION_INFORMATION_CLASS iclass, PVOID pInfoBuffer, ULONG nBufSize,
@@ -713,6 +799,8 @@ typedef NTSTATUS(__stdcall* CbNtThreadProc_t)(PVOID pParam);
 typedef NTSTATUS(__stdcall* NtCancelIoFile_t)(HANDLE hFile, PIO_STATUS_BLOCK piosbCancellation);
 typedef NTSTATUS(__stdcall* NtCancelIoFileEx_t)(HANDLE hFile, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation);
 typedef NTSTATUS(__stdcall* NtCancelSynchronousIoFile_t)(HANDLE hThread, OPTIONAL PIO_STATUS_BLOCK piosbToCancel, PIO_STATUS_BLOCK piosbCancellation);
+
+typedef void(__stdcall* RtlInitializeContext_t)(HANDLE hProcessIgnored, OUT PCONTEXT pctx, PVOID pParam, PVOID pFirstInstruction, PVOID pStackLocation);
 
 #endif // CB_NTDLL_NO_TYPES
 
@@ -785,6 +873,11 @@ NTSTATUS __stdcall NtYieldExecution(void);
 NTSTATUS __stdcall NtWaitForSingleObject(HANDLE hObject, BOOLEAN bAlertable, OPTIONAL PLARGE_INTEGER pliTimeout);
 NTSTATUS __stdcall NtQueryInformationThread(HANDLE hThread, THREAD_INFORMATION_CLASS_FULL iclass, OUT PVOID pInfo, ULONG nInfoMaxSize,
 	OUT PULONG pnInfoSize);
+NTSTATUS __stdcall NtCreateThread(OUT PHANDLE phThread, ACCESS_MASK access, OPTIONAL POBJECT_ATTRIBUTES pattr, HANDLE hProcess, OUT PCLIENT_ID pcid,
+	PCONTEXT pctxInitial, PINITIAL_TEB pInitTeb, BOOLEAN bCreateSus);
+NTSTATUS __stdcall NtDuplicateObject(HANDLE hSrcProcess, HANDLE hSrcObject, HANDLE hTgtProcess, OUT PHANDLE phTgtObject, OPTIONAL ACCESS_MASK access,
+	BOOLEAN bInheritHandle, ULONG flags);
+NTSTATUS __stdcall NtQueryObject(HANDLE hObject, OBJECT_INFORMATION_CLASS iclass, OUT PVOID pinfObject, ULONG nMaxLength, OUT PULONG nActualLength);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);
@@ -800,10 +893,12 @@ NTSTATUS __stdcall RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION pcs);
 NTSTATUS __stdcall RtlEnterCriticalSection(PRTL_CRITICAL_SECTION pcs);
 NTSTATUS __stdcall RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION pcs);
 NTSTATUS __stdcall RtlDeleteCriticalSection(PRTL_CRITICAL_SECTION pcs);
+void __stdcall RtlInitializeContext(HANDLE hProcessIgnored, OUT PCONTEXT pctx, PVOID pParam, PVOID pFirstInstruction, PVOID pStackLocation);
 
 PVOID __stdcall RtlCreateHeap(ULONG flags, OPTIONAL PVOID pBase, OPTIONAL SIZE_T nReserveSize, OPTIONAL SIZE_T nCommitSize, OPTIONAL PVOID pLock, 
 	OPTIONAL PVOID pParams);
 PVOID __stdcall RtlAllocateHeap(PVOID pHeap, OPTIONAL ULONG flags, SIZE_T nSize);
+PVOID __stdcall RtlReAllocateHeap(PVOID pHeap, OPTIONAL ULONG flags, PVOID pBlock, ULONG nNewSize);
 BOOL __stdcall RtlFreeHeap(PVOID pHeap, OPTIONAL ULONG flags, PVOID pBlock);
 PVOID __stdcall RtlDestroyHeap(PVOID pHeap);
 void __stdcall RtlAcquirePebLock(void);
@@ -825,19 +920,21 @@ NTSTATUS CbGetSectionName(HANDLE hProcess, LPVOID pMemoryArea, LPSTR pszNameBuf,
 NTSTATUS CbGetCurrentDirectoryNT(LPSTR pszBuffer, SIZE_T nBufSize);
 
 typedef enum _enum_CbSeverity {
-	CbSeverityNull,
-	CbSeverityInfo,
-	CbSeverityWarning,
-	CbSeverityError
+	CbSeverityNull = 0x00,
+	CbSeverityInfo = 0x01,
+	CbSeverityWarning = 0x02,
+	CbSeverityError = 0x03,
+	CbSeverityFlagAbortRetryIgnore = 0x10
 } CbSeverity_t;
 
 // These functions display a message box without loading/calling anything other than NTDLL
-// Note: CbDisplayMessageA will allocate/free memory
+// Note: CbDisplayMessageA and CbDisplayStatus will allocate/free memory
 
 NTSTATUS CbDisplayMessageUni(PUNICODE_STRING pusTitle, PUNICODE_STRING pusMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayMessageA(LPCSTR pcszTitle, LPCSTR pcszMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayMessageW(LPCWSTR pcwzTitle, LPCWSTR pcwzMessage, CbSeverity_t sev);
 NTSTATUS CbDisplayError(DWORD nErrorCode, PEXCEPTION_POINTERS pex, LPCSTR pcszContext);
+NTSTATUS CbDisplayStatus(NTSTATUS statusToReport, BOOL bAbortPrompt, LPCSTR pcszContextFormat, ...);
 
 // set this before calling NTDLL funcs to force a specific address
 // useful if running in an environment where the loaded modules list is uninitialized
@@ -845,6 +942,14 @@ extern LPVOID CbNTDLLBaseAddress;
 
 // ntdll-only thread-safe heap functions
 PVOID CbHeapAllocate(SIZE_T nBytes, BOOL bZeroInit);
+PVOID CbHeapReallocate(PVOID pBlock, SIZE_T nNewSize, BOOL bZeroInitNew);
 void CbHeapFree(PVOID pBlock);
+
+// heap string functions based on CbHeapAllocate/CbHeapFree
+LPSTR CbHeapVPrintf(LPCSTR pcszFormat, va_list va);
+LPSTR CbHeapPrintf(LPCSTR pcszFormat, ...);
+
+// check if handle has desired access to object
+BOOLEAN CbAccessCheck(HANDLE hObject, ACCESS_MASK access);
 
 #endif

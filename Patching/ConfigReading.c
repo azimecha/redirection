@@ -1,6 +1,7 @@
 #include "ConfigReading.h"
 #include "FilePaths.h"
 #include "ImportHelper.h"
+#include "PartialStdio.h"
 #include <NTDLL.h>
 
 #define WIN32_LEAN_AND_MEAN
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <limits.h>
 #include <stdint.h>
+#include <wchar.h>
 
 static void* s_INIAllocate(void* pUnused, size_t nSize);
 static void s_INIFree(void* pUnused, void* pBlock);

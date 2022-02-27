@@ -33,4 +33,14 @@ void CbReleaseSpinLock(CbSpinLock_t* pLockVal);
 // opens all-access handle to the current thread
 DWORD CbOpenCurrentThread(OUT PHANDLE phCurThread);
 
+#if 0
+// creates a new thread directly using ntdll functions
+typedef ULONG_PTR(__stdcall* CbDirectCreatedThreadProc_t)(ULONG_PTR param);
+
+DWORD CbCreateThreadDirect(OUT PHANDLE phThread, OPTIONAL OUT PDWORD pnThreadID, SIZE_T nStackSize, CbDirectCreatedThreadProc_t procStart,
+	OPTIONAL ULONG_PTR param, BOOLEAN bSus);
+#endif
+
+BOOLEAN CbIsThreadInLoaderLock(DWORD nThreadID);
+
 #endif

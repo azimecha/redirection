@@ -1,6 +1,7 @@
 #include "NTDLL.h"
 #include "ImportHelper.h"
 #include "ThreadOps.h"
+#include "stb_sprintf.h"
 #include <malloc.h>
 
 /*
@@ -93,10 +94,18 @@ CB_NTDLL_DEFINE(NtTerminateThread, (HANDLE a, NTSTATUS b), (a, b));
 CB_NTDLL_DEFINE(NtYieldExecution, (void), ());
 CB_NTDLL_DEFINE(NtWaitForSingleObject, (HANDLE a, BOOLEAN b, OPTIONAL PLARGE_INTEGER c), (a, b, c));
 CB_NTDLL_DEFINE(NtQueryInformationThread, (HANDLE a, THREAD_INFORMATION_CLASS_FULL b, OUT PVOID c, ULONG d, OUT PULONG e), (a, b, c, d, e));
+CB_NTDLL_DEFINE(NtCreateThread, (OUT PHANDLE phThread, ACCESS_MASK access, OPTIONAL POBJECT_ATTRIBUTES pattr, HANDLE hProcess,
+	OUT PCLIENT_ID pcid, PCONTEXT pctxInitial, PINITIAL_TEB pInitTeb, BOOLEAN bCreateSus), (phThread, access, pattr, hProcess, pcid, 
+		pctxInitial, pInitTeb, bCreateSus));
+CB_NTDLL_DEFINE(NtDuplicateObject, (HANDLE hSrcProcess, HANDLE hSrcObject, HANDLE hTgtProcess, OUT PHANDLE phTgtObject, OPTIONAL ACCESS_MASK access,
+	BOOLEAN bInheritHandle, ULONG flags), (hSrcProcess, hSrcObject, hTgtProcess, phTgtObject, access, bInheritHandle, flags));
+CB_NTDLL_DEFINE(NtQueryObject, (HANDLE hObject, OBJECT_INFORMATION_CLASS iclass, OUT PVOID pinfObject, ULONG nMaxLength, OUT PULONG nActualLength),
+	(hObject, iclass, pinfObject, nMaxLength, nActualLength));
 
 CB_NTDLL_DEFINE_ALT(PVOID, RtlCreateHeap, (ULONG a, OPTIONAL PVOID b, OPTIONAL SIZE_T c, OPTIONAL SIZE_T d, OPTIONAL PVOID e,
 	OPTIONAL PVOID f), (a, b, c, d, e, f));
 CB_NTDLL_DEFINE_ALT(PVOID, RtlAllocateHeap, (PVOID a, OPTIONAL ULONG b, SIZE_T c), (a, b, c));
+CB_NTDLL_DEFINE_ALT(PVOID, RtlReAllocateHeap, (PVOID a, OPTIONAL ULONG b, PVOID c, ULONG d), (a, b, c, d));
 CB_NTDLL_DEFINE_ALT(BOOL, RtlFreeHeap, (PVOID a, OPTIONAL ULONG b, PVOID c), (a, b, c));
 CB_NTDLL_DEFINE_ALT(PVOID, RtlDestroyHeap, (PVOID a), (a));
 CB_NTDLL_DEFINE(RtlCreateUserThread, (HANDLE a, OPTIONAL PSECURITY_DESCRIPTOR b, BOOLEAN c, ULONG d, OUT PULONG e, OUT PULONG f,
@@ -152,12 +161,20 @@ static const int s_arrMessageBoxSeverityFlags[] = { 0, MB_ICONINFORMATION, MB_IC
 NTSTATUS CbDisplayMessageUni(PUNICODE_STRING pusTitle, PUNICODE_STRING pusMessage, CbSeverity_t sev) {
 	ULONG nResponse;
 	ULONG_PTR arrParams[3];
+	NTSTATUS status;
 
 	arrParams[0] = (ULONG_PTR)pusMessage;
 	arrParams[1] = (ULONG_PTR)pusTitle;
-	arrParams[2] = (ULONG_PTR)s_arrMessageBoxSeverityFlags[(int)sev];
+	arrParams[2] = (ULONG_PTR)s_arrMessageBoxSeverityFlags[(int)sev & 0x03];
 
-	return NtRaiseHardError(0x50000018, RTL_NUMBER_OF_V2(arrParams), 3, arrParams, 0, &nResponse);
+	if (sev & CbSeverityFlagAbortRetryIgnore)
+		arrParams[2] |= MB_ABORTRETRYIGNORE;
+
+	status = NtRaiseHardError(0x50000018, RTL_NUMBER_OF_V2(arrParams), 3, arrParams, 0, &nResponse);
+	if (CB_NT_FAILED(status))
+		return status;
+
+	return (sev & CbSeverityFlagAbortRetryIgnore) ? (STATUS_WAIT_0 + nResponse) : 0;
 }
 
 NTSTATUS CbDisplayMessageA(LPCSTR pcszTitle, LPCSTR pcszMessage, CbSeverity_t sev) {
@@ -363,6 +380,13 @@ PVOID CbHeapAllocate(SIZE_T nBytes, BOOL bZeroInit) {
 	return RtlAllocateHeap(s_pDefaultHeap, bZeroInit ? HEAP_ZERO_MEMORY : 0, nBytes);
 }
 
+PVOID CbHeapReallocate(PVOID pBlock, SIZE_T nNewSize, BOOL bZeroInitNew) {
+	if (!s_pDefaultHeap || !pBlock)
+		return NULL;
+
+	return RtlReAllocateHeap(s_pDefaultHeap, bZeroInitNew ? HEAP_ZERO_MEMORY : 0, pBlock, nNewSize);
+}
+
 void CbHeapFree(PVOID pBlock) {
 	if (s_pDefaultHeap && pBlock)
 		RtlFreeHeap(s_pDefaultHeap, 0, pBlock);
@@ -476,4 +500,154 @@ void __stdcall CbRtlUnwind(PVOID a, PVOID b, PEXCEPTION_RECORD c, PVOID d) {
 		procRtlUnwind = CbGetNTDLLFunction("RtlUnwind");
 
 	procRtlUnwind(a, b, c, d);
+}
+
+void __stdcall RtlInitializeContext(HANDLE hProcessIgnored, OUT PCONTEXT pctx, PVOID pParam, PVOID pFirstInstruction, PVOID pStackLocation) {
+	static RtlInitializeContext_t procRtlInitContext = NULL;
+
+	if (procRtlInitContext == NULL)
+		procRtlInitContext = CbGetNTDLLFunction("RtlInitializeContext");
+
+	procRtlInitContext(hProcessIgnored, pctx, pParam, pFirstInstruction, pStackLocation);
+}
+
+NTSTATUS CbDisplayStatus(NTSTATUS statusToReport, BOOL bAbortPrompt, LPCSTR pcszContextFormat, ...) {
+	LPSTR pszContext = NULL, pszFullMessage = NULL;
+	va_list va;
+	NTSTATUS status;
+	LPCSTR pcszDescriptor;
+	CbSeverity_t sev = CbSeverityNull;
+
+	switch (CB_NTSTATUS_SEVERITY(statusToReport)) {
+	case STATUS_SEVERITY_SUCCESS:
+	case STATUS_SEVERITY_INFORMATIONAL:
+		sev = CbSeverityInfo;
+	default:
+		pcszDescriptor = "Status";
+		break;
+
+	case STATUS_SEVERITY_WARNING:
+		sev = CbSeverityWarning;
+		pcszDescriptor = "Warning";
+		break;
+
+	case STATUS_SEVERITY_ERROR:
+		sev = CbSeverityError;
+		pcszDescriptor = "Error";
+		break;
+	}
+
+	if (bAbortPrompt)
+		sev |= CbSeverityFlagAbortRetryIgnore;
+
+	va_start(va, pcszContextFormat);
+	pszContext = CbHeapVPrintf(pcszContextFormat, va);
+	va_end(va);
+
+	if (pszContext == NULL) {
+		status = STATUS_NO_MEMORY;
+		goto L_exit;
+	}
+
+	// todo: load description of status from ntdll
+	pszFullMessage = CbHeapPrintf("%s 0x%08X while %s.%s", pcszDescriptor, statusToReport, pszContext, bAbortPrompt ?
+		"\r\n\r\n[Abort]: Terminate the process\r\n[Retry]: Perform debug break\r\n[Ignore]: Continue execution" : "");
+	if (pszFullMessage == NULL) {
+		status = STATUS_NO_MEMORY;
+		goto L_exit;
+	}
+
+	status = CbDisplayMessageA("Magic Ways", pszFullMessage, sev);
+	switch (status) {
+	case STATUS_WAIT_0:
+	case STATUS_WAIT_0 + IDIGNORE:
+	default:
+		break;
+
+	case STATUS_WAIT_0 + IDABORT:
+		NtTerminateProcess(CB_CURRENT_PROCESS, statusToReport);
+		__debugbreak();
+		break;
+
+	case STATUS_WAIT_0 + IDRETRY:
+		__debugbreak();
+		break;
+	}
+
+L_exit:
+	if (pszContext)
+		CbHeapFree(pszContext);
+	if (pszFullMessage)
+		CbHeapFree(pszFullMessage);
+	return status;
+}
+
+typedef struct _CB_HEAP_PRINTF_DATA {
+	LPSTR pszBuffer;
+	SIZE_T nBufSize;
+	BOOLEAN bError;
+	char szTempBuf[STB_SPRINTF_MIN];
+} CB_HEAP_PRINTF_DATA, *PCB_HEAP_PRINTF_DATA;
+
+static char* s_CbHeapPrintfCallback(char const* buf, void* user, int len) {
+	PCB_HEAP_PRINTF_DATA pData;
+	SIZE_T nReqSize;
+	LPSTR pszNewBuffer;
+
+	pData = (PCB_HEAP_PRINTF_DATA)user;
+	if (pData == NULL) return NULL;
+
+	nReqSize = pData->nBufSize + (SIZE_T)len;
+	pszNewBuffer = CbHeapReallocate(pData->pszBuffer, nReqSize, TRUE);
+	if (pszNewBuffer == NULL) {
+		pData->bError = TRUE;
+		return NULL;
+	}
+
+	memcpy(pData->pszBuffer + pData->nBufSize - 1, buf, (size_t)len);
+	pData->nBufSize = nReqSize;
+	
+	return pData->szTempBuf;
+}
+
+LPSTR CbHeapVPrintf(LPCSTR pcszFormat, va_list va) {
+	CB_HEAP_PRINTF_DATA data;
+
+	data.bError = FALSE;
+	data.nBufSize = 1;
+	data.pszBuffer = CbHeapAllocate(data.nBufSize, TRUE);
+	if (data.pszBuffer == NULL)
+		return NULL;
+
+	vsprintfcb(s_CbHeapPrintfCallback, &data, data.szTempBuf, pcszFormat, va);
+
+	if (data.bError && data.pszBuffer) {
+		CbHeapFree(data.pszBuffer);
+		data.pszBuffer = NULL;
+	}
+
+	return data.pszBuffer;
+}
+
+LPSTR CbHeapPrintf(LPCSTR pcszFormat, ...) {
+	va_list va;
+	LPSTR pszResult;
+
+	va_start(va, pcszFormat);
+	pszResult = CbHeapVPrintf(pcszFormat, va);
+	va_end(va);
+
+	return pszResult;
+}
+
+BOOLEAN CbAccessCheck(HANDLE hObject, ACCESS_MASK access) {
+	OBJECT_BASIC_INFORMATION infObject;
+	ULONG nInfoSize;
+	NTSTATUS status;
+
+	status = NtQueryObject(hObject, ObjectBasicInformation, &infObject, sizeof(infObject), &nInfoSize);
+	if (CB_NT_FAILED(status))
+		return FALSE;
+
+	return (infObject.DesiredAccess & access) == access;
 }
