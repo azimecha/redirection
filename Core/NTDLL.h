@@ -878,6 +878,9 @@ NTSTATUS __stdcall NtCreateThread(OUT PHANDLE phThread, ACCESS_MASK access, OPTI
 NTSTATUS __stdcall NtDuplicateObject(HANDLE hSrcProcess, HANDLE hSrcObject, HANDLE hTgtProcess, OUT PHANDLE phTgtObject, OPTIONAL ACCESS_MASK access,
 	BOOLEAN bInheritHandle, ULONG flags);
 NTSTATUS __stdcall NtQueryObject(HANDLE hObject, OBJECT_INFORMATION_CLASS iclass, OUT PVOID pinfObject, ULONG nMaxLength, OUT PULONG nActualLength);
+NTSTATUS __stdcall NtQuerySymbolicLinkObject(HANDLE hLink, PUNICODE_STRING pusTarget, OUT PULONG pnTargetLength);
+NTSTATUS __stdcall NtOpenSymbolicLinkObject(OUT PHANDLE phLink, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib);
+NTSTATUS __stdcall NtFlushWriteBuffer(void);
 
 NTSTATUS __stdcall RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PCANSI_STRING SourceString, BOOLEAN AllocateDestinationString);
 NTSTATUS __stdcall RtlUnicodeStringToAnsiString(PANSI_STRING DestinationString, PCUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);

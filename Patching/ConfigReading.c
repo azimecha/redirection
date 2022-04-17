@@ -196,7 +196,7 @@ BOOL PaDoesFileExist(const char* pcszFilePath) {
 
 typedef HRESULT(__stdcall* FilterGetDosName_t)(LPCWSTR pcwzVolumeName, LPWSTR pwzDOSNameOUT, DWORD nBufSize);
 
-BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize) {
+static NTSTATUS s_GetVolumeWin32PathFltlib(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize) {
 	static volatile HMODULE hFilterLib;
 	static FilterGetDosName_t procFilterGetDosName;
 	HMODULE hNewFilterLib;
@@ -221,16 +221,15 @@ BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nB
 	usNTName.MaximumLength = sizeof(wzNTName) - sizeof(WCHAR);
 
 	status = RtlAnsiStringToUnicodeString(&usNTName, &asNTName, FALSE);
-	if (status != 0) {
-		SetLastError(RtlNtStatusToDosError(status));
-		return FALSE;
-	}
+	if (CB_NT_FAILED(status))
+		return status;
 
 	// find and call function
 
 	if (hFilterLib == NULL) {
 		hNewFilterLib = LoadLibraryA("fltlib.dll");
-		if (hNewFilterLib == NULL) return FALSE;
+		if (hNewFilterLib == NULL)
+			return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 
 		if (InterlockedCompareExchangePointer(&hFilterLib, hNewFilterLib, NULL) != NULL)
 			FreeLibrary(hNewFilterLib);
@@ -238,14 +237,13 @@ BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nB
 
 	if (procFilterGetDosName == NULL) {
 		procFilterGetDosName = (FilterGetDosName_t)GetProcAddress(hFilterLib, "FilterGetDosName");
-		if (procFilterGetDosName == NULL) return FALSE;
+		if (procFilterGetDosName == NULL)
+			return CB_WINAPIERR_TO_NTSTATUS(CbLastWinAPIError);
 	}
 
 	hr = procFilterGetDosName(wzNTName, wzDOSName, RTL_NUMBER_OF_V2(wzDOSName));
-	if (FAILED(hr)) {
-		SetLastError(ERROR_PATH_NOT_FOUND);
-		return FALSE;
-	}
+	if (FAILED(hr))
+		return STATUS_NOT_FOUND;
 
 	// convert DOS name to ansi
 
@@ -258,12 +256,81 @@ BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nB
 	asDOSName.MaximumLength = (USHORT)nBufSize;
 
 	status = RtlUnicodeStringToAnsiString(&asDOSName, &usDOSName, FALSE);
-	if (status != 0) {
-		SetLastError(RtlNtStatusToDosError(status));
-		return FALSE;
+	if (CB_NT_FAILED(status))
+		return status;
+
+	return 0;
+}
+
+static WCHAR s_wzDrivePathFormat[] = L"\\??\\?:";
+#define PA_DRIVE_NTPATH_LETTER_OFFSET 4
+
+static NTSTATUS s_GetVolumeWin32PathNT(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize) {
+	NTSTATUS status;
+	char cDriveLetter;
+	UNICODE_STRING usDriveNTPath, usLinkTarget;
+	WCHAR wzDriveNTPath[ARRAYSIZE(s_wzDrivePathFormat)];
+	HANDLE hDriveLink;
+	OBJECT_ATTRIBUTES attrib;
+	WCHAR wzLinkTarget[MAX_PATH];
+	char szLinkTarget[MAX_PATH];
+
+	memcpy(wzDriveNTPath, s_wzDrivePathFormat, sizeof(wzDriveNTPath));
+	usDriveNTPath.Buffer = wzDriveNTPath;
+	usDriveNTPath.MaximumLength = usDriveNTPath.Length = sizeof(wzDriveNTPath) - sizeof(WCHAR);
+
+	memset(&attrib, 0, sizeof(attrib));
+	attrib.Length = sizeof(attrib);
+	attrib.ObjectName = &usDriveNTPath;
+
+	usLinkTarget.Buffer = wzLinkTarget;
+	usLinkTarget.Length = 0;
+	usLinkTarget.MaximumLength = sizeof(wzLinkTarget) - sizeof(WCHAR);
+
+	for (cDriveLetter = 'A'; cDriveLetter <= 'Z'; cDriveLetter++) {
+		wzDriveNTPath[PA_DRIVE_NTPATH_LETTER_OFFSET] = cDriveLetter;
+		
+		status = NtOpenSymbolicLinkObject(&hDriveLink, GENERIC_READ, &attrib);
+		if (CB_NT_FAILED(status))
+			continue;
+
+		status = NtQuerySymbolicLinkObject(hDriveLink, &usLinkTarget, NULL);
+		NtClose(hDriveLink);
+		if (CB_NT_FAILED(status))
+			continue;
+
+		wzLinkTarget[usLinkTarget.Length / sizeof(WCHAR)] = 0;
+		wcstombs(szLinkTarget, wzLinkTarget, sizeof(szLinkTarget));
+		if (!stricmp(szLinkTarget, pcszNTName)) {
+			snprintf(pszPathBuffer, nBufSize, "%c:", cDriveLetter);
+			return 0;
+		}
 	}
 
-	return TRUE;
+	return STATUS_NOT_FOUND;
+}
+
+BOOL PaGetVolumeWin32Path(const char* pcszNTName, char* pszPathBuffer, size_t nBufSize) {
+	NTSTATUS status = STATUS_NOT_FOUND;
+
+	if (0) {
+		__try {
+			status = s_GetVolumeWin32PathFltlib(pcszNTName, pszPathBuffer, nBufSize);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			status = GetExceptionCode() | (STATUS_SEVERITY_ERROR << 30);
+		}
+	}
+
+	if (CB_NT_FAILED(status)) {
+		__try {
+			status = s_GetVolumeWin32PathNT(pcszNTName, pszPathBuffer, nBufSize);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			status = GetExceptionCode() | (STATUS_SEVERITY_ERROR << 30);
+		}
+	}
+
+	CbLastWinAPIError = RtlNtStatusToDosError(status);
+	return !CB_NT_FAILED(status);
 }
 
 // no kernel32 calls

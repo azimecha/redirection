@@ -38,11 +38,62 @@ static char s_szINIPath[MAX_PATH + 1] = { 0 };
 static char s_szRedirDLLName[MAX_PATH + 1] = { 0 };
 static PaModuleHandle s_hMorningGlory, s_hNTDLL, s_hMagicWays;
 static PLDR_DATA_TABLE_ENTRY_FULL s_pentMyModule;
-static DWORD s_nOldNTDLLAddrVarProt;
+static DWORD s_nOldNTDLLAddrVarProt, s_nPathVarLength, s_nPathVarBufSize, s_nPathReadResult;
 static BYTE s_arrOldInitThunkCode[PA_REPLACEFUNC_CODESIZE] = { 0xCC, 0x02 }; // default to INT3, 0x02 indicates written by shimmer
 static WCHAR s_wzMagicWaysPath[MAX_PATH];
+static LPSTR s_pszPathVar;
+static char s_szShimmerDirPath[MAX_PATH];
+static LPSTR s_pszShimmerName;
 
 void ENTRY_POINT(void) {
+	// add our directory to the PATH environment variable for DLL search purposes
+
+	if (!PaGetProcessExecutablePath(GetCurrentProcess(), s_szShimmerDirPath, sizeof(s_szShimmerDirPath))) {
+		printf("Error 0x%08X determining current process path\r\n", GetLastError());
+		ExitProcess(1);
+	}
+
+	printf("Shimmer executable: %s\r\n", s_szShimmerDirPath);
+
+	s_pszShimmerName = (LPSTR)CbPathGetFilenameA(s_szShimmerDirPath);
+	if ((s_pszShimmerName == NULL) || (s_pszShimmerName == s_szShimmerDirPath)) {
+		puts("Invalid executable path");
+		ExitProcess(1);
+	}
+
+	s_pszShimmerName[-1] = 0;
+	printf("Shimmer folder: %s\r\n", s_szShimmerDirPath);
+
+	s_nPathVarLength = GetEnvironmentVariableA("PATH", NULL, 0);
+	if (s_nPathVarLength == 0) {
+		printf("Error 0x%08X querying PATH variable size\r\n", GetLastError());
+		ExitProcess(1);
+	}
+	
+	s_nPathVarBufSize = s_nPathVarLength + strlen(s_szShimmerDirPath) + 2;
+	s_pszPathVar = CbHeapAllocate(s_nPathVarBufSize, FALSE);
+	if (s_pszPathVar == NULL) {
+		printf("Unable to allocate %u bytes for PATH variable\r\n", s_nPathVarBufSize);
+		ExitProcess(1);
+	}
+
+	s_nPathReadResult = GetEnvironmentVariableA("PATH", s_pszPathVar, s_nPathVarBufSize);
+	if (s_nPathReadResult == 0) {
+		printf("Error 0x%08X reading PATH variable\r\n", GetLastError());
+		ExitProcess(1);
+	} else if (s_nPathReadResult > s_nPathVarLength) {
+		puts("Error: PATH variable changed size during reading??");
+		ExitProcess(1);
+	}
+
+	strcat(s_pszPathVar, ";");
+	strcat(s_pszPathVar, s_szShimmerDirPath);
+
+	if (!SetEnvironmentVariableA("PATH", s_pszPathVar)) {
+		printf("Error 0x%08X setting PATH variable\r\n", GetLastError());
+		ExitProcess(1);
+	}
+
 	// the rest of the command line after our own executable's name gets passed on directly
 	s_pszCommandLine = (LPSTR)CbGetNextArgument(GetCommandLineA(), '^');
 

@@ -101,6 +101,9 @@ CB_NTDLL_DEFINE(NtDuplicateObject, (HANDLE hSrcProcess, HANDLE hSrcObject, HANDL
 	BOOLEAN bInheritHandle, ULONG flags), (hSrcProcess, hSrcObject, hTgtProcess, phTgtObject, access, bInheritHandle, flags));
 CB_NTDLL_DEFINE(NtQueryObject, (HANDLE hObject, OBJECT_INFORMATION_CLASS iclass, OUT PVOID pinfObject, ULONG nMaxLength, OUT PULONG nActualLength),
 	(hObject, iclass, pinfObject, nMaxLength, nActualLength));
+CB_NTDLL_DEFINE(NtQuerySymbolicLinkObject, (HANDLE hLink, PUNICODE_STRING pusTarget, OUT PULONG pnTargetLength), (hLink, pusTarget, pnTargetLength));
+CB_NTDLL_DEFINE(NtOpenSymbolicLinkObject, (OUT PHANDLE phLink, ACCESS_MASK access, POBJECT_ATTRIBUTES attrib), (phLink, access, attrib));
+CB_NTDLL_DEFINE(NtFlushWriteBuffer, (void), ());
 
 CB_NTDLL_DEFINE_ALT(PVOID, RtlCreateHeap, (ULONG a, OPTIONAL PVOID b, OPTIONAL SIZE_T c, OPTIONAL SIZE_T d, OPTIONAL PVOID e,
 	OPTIONAL PVOID f), (a, b, c, d, e, f));
